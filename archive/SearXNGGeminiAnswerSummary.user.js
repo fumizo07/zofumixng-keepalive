@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SearXNG Gemini Answer + Summary (combined, zofumixng)
+// @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace    https://example.com/searxng-gemini-combined
-// @version      0.2.0
-// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト
+// @version      0.4.0
+// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
 // @author       you
 // @match        *://zofumixng.onrender.com/*
 // @grant        none
@@ -245,7 +245,8 @@
   }
 
   // ===== サマリ UI 作成 =====
-  function createSummaryBox(sidebar) {
+  // afterElement が指定されている場合は、その直後に挿入
+  function createSummaryBox(sidebar, afterElement = null) {
     const aiBox = document.createElement('div');
     aiBox.innerHTML = `
       <div style="margin-top:1em;margin-bottom:0.5em;padding:0.5em;
@@ -262,14 +263,21 @@
         </div>
       </div>
     `;
-    sidebar.insertBefore(aiBox, sidebar.firstChild);
+
+    if (afterElement && afterElement.parentNode === sidebar) {
+      sidebar.insertBefore(aiBox, afterElement.nextSibling);
+    } else {
+      sidebar.insertBefore(aiBox, sidebar.firstChild);
+    }
+
     const contentEl = aiBox.querySelector('.gemini-summary-content');
     const timeEl = aiBox.querySelector('.gemini-summary-time');
     return { contentEl, timeEl };
   }
 
   // ===== 回答 UI 作成 =====
-  function createAnswerBox(mainResults) {
+  // サイドバーがあれば必ずサイドバー先頭、なければメインカラム上部
+  function createAnswerBox(mainResults, sidebar) {
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
 
@@ -293,10 +301,15 @@
       </div>
     `;
 
-    mainResults.parentNode.insertBefore(wrapper, mainResults);
+    if (sidebar) {
+      sidebar.insertBefore(wrapper, sidebar.firstChild);
+    } else {
+      mainResults.parentNode.insertBefore(wrapper, mainResults);
+    }
+
     const contentEl = wrapper.querySelector('.gemini-answer-content');
     const statusEl = wrapper.querySelector('.gemini-answer-status');
-    return { contentEl, statusEl };
+    return { contentEl, statusEl, wrapper };
   }
 
   // ===== 概要レンダリング =====
@@ -489,17 +502,21 @@ ${snippets}
     return;
   }
 
-  // UI 作成
+  // まず回答ボックスを作成（サイドバーがあれば必ずそこ）
+  const {
+    contentEl: answerEl,
+    statusEl: answerStatusEl,
+    wrapper: answerWrapper
+  } = createAnswerBox(mainResults, sidebar);
+
+  // サマリ UI 作成（サイドバーがあれば回答の直後に置く）
   let summaryContentEl = null;
   let summaryTimeEl = null;
   if (sidebar) {
-    const s = createSummaryBox(sidebar);
+    const s = createSummaryBox(sidebar, answerWrapper); // 回答の直後に概要
     summaryContentEl = s.contentEl;
     summaryTimeEl = s.timeEl;
   }
-
-  const { contentEl: answerEl, statusEl: answerStatusEl } =
-    createAnswerBox(mainResults);
 
   // 概要キャッシュ確認
   const cacheKey = normalizeQuery(query);
@@ -520,7 +537,6 @@ ${snippets}
   let totalChars = 0;
 
   for (const r of results) {
-    // スニペット
     const snippetEl = r.querySelector('.result__snippet') || r;
     let text = snippetEl.innerText.trim();
     excludePatterns.forEach(p => {
@@ -531,7 +547,6 @@ ${snippets}
     snippetsArr.push(text);
     totalChars += text.length;
 
-    // URL も拾っておく
     const link = r.querySelector('a');
     if (link && link.href) {
       urlList.push(link.href);
