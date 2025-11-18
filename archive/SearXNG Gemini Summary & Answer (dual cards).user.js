@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace    https://example.com/searxng-gemini-combined
-// @version      0.5.0
+// @version      0.5.1
 // @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
 // @author       you
 // @match        *://zofumixng.onrender.com/*
@@ -15,7 +15,6 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    // ★ 最新のFlash系モデル（2025-11時点）
     MODEL_NAME: 'gemini-2.5-flash',
     MAX_RESULTS: 20,                       // 最大取得件数（重い場合は 10 などに）
     SNIPPET_CHAR_LIMIT: 5000,              // スニペットの総文字数上限
@@ -320,7 +319,7 @@
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
 
-    // ★ 背景含め、このブロックは元コードのまま（変更なし）
+    // 背景含め、このブロックは元コードのまま
     wrapper.innerHTML = `
       <div style="
         border-radius:12px;
@@ -518,33 +517,46 @@ ${snippets}
 - 治安はどうか
 - 通貨は何か
 - 主に何語を話すか
+- 観光客が避けるべきタブー
+- 代表的な料理
 を日本人目線で簡潔に伝えてください。
 
 【出力フォーマット（日本語）】
-必ず次の形式で出力してください。各項目の前後に余計な説明は書かないでください。
+必ず次の見出しだけを、この順番で出力してください。
 
 【概要】
-その国・地域がどんな場所かを1〜2文でまとめる。
+その国・地域がどんな場所かを「できれば1文」で、ごく簡潔にまとめる。
+（長くても2文まで）
 
 【ビザ】
 日本のパスポートで短期観光する場合の一般的な傾向を1〜2文で。
 （例：「日本からの短期観光では〇日以内の滞在ならビザ不要な場合が多い。ただし最新の公式情報を要確認。」）
-不明な場合や条件が複雑な場合は、その旨を書きつつ「最終的には大使館などの最新の公式情報を確認してください」と必ず付ける。
+不明な場合や条件が複雑な場合は、その旨を書きつつ
+「最終的には大使館などの最新の公式情報を確認してください」と必ず付ける。
 
 【治安】
 - 全体的な治安の印象を1〜2文。
 - 注意が必要なポイントがあれば1〜3行で簡潔に。
 
 【通貨】
-- 通貨名（例：インドネシア・ルピア（IDR））を1行で。
+- 通貨名と通貨コード（例：インドネシア・ルピア（IDR））を1行で。
 
 【言語】
 - 主に使われている公用語／日常でよく使われる言語を1〜2行で。
 
+【タブー】
+- 観光客が避けるべき代表的なタブーやNG行為を2〜5行で。
+  （宗教・文化・服装・写真撮影など、重要度が高いものを優先）
+
+【料理】
+- 代表的な郷土料理や有名な食べ物を2〜5個ほど、簡単な説明つきで。
+  （例：「ナシゴレン：〜」「サテ：〜」のような形式）
+
 【その他の条件】
-- 全体で日本語400〜700文字程度に収めてください。
+- 全体で日本語500〜800文字程度に収めてください。
 - マークダウン記法（# や * など）は使わないでください。
-- 「〜だと思われます」など曖昧すぎる表現は避け、一般的な傾向として表現してください（ただし最新情報の確認は促してください）。
+- 「〜だと思われます」など曖昧すぎる表現は避け、一般的な傾向として表現してください
+  （ただし最新情報の確認は促してください）。
       `.trim();
     } else {
       // その他一般のクエリ
@@ -593,7 +605,6 @@ ${snippets}
 
   // ===== メイン処理 =====
 
-  // SearXNGページか判定
   const form = document.querySelector('#search_form, form[action="/search"]');
   const sidebar = document.querySelector('#sidebar');
   const mainResults =
@@ -618,18 +629,18 @@ ${snippets}
     return;
   }
 
-  // まず回答ボックスを作成（サイドバーがあれば必ずそこ）
+  // まず回答ボックス
   const {
     contentEl: answerEl,
     statusEl: answerStatusEl,
     wrapper: answerWrapper
   } = createAnswerBox(mainResults, sidebar);
 
-  // サマリ UI 作成（サイドバーがあれば回答の直後に置く）
+  // 概要ボックス（回答の直後）
   let summaryContentEl = null;
   let summaryTimeEl = null;
   if (sidebar) {
-    const s = createSummaryBox(sidebar, answerWrapper); // 回答の直後に概要
+    const s = createSummaryBox(sidebar, answerWrapper);
     summaryContentEl = s.contentEl;
     summaryTimeEl = s.timeEl;
   }
@@ -644,7 +655,7 @@ ${snippets}
     log.info('概要: キャッシュを使用:', query);
   }
 
-  // 検索結果からスニペット収集（概要・回答の共通ソース）
+  // 検索結果からスニペット収集
   const results = await fetchSearchResults(form, mainResults, CONFIG.MAX_RESULTS);
   const excludePatterns = [/google キャッシュ$/i];
 
@@ -671,7 +682,7 @@ ${snippets}
 
   const snippets = snippetsArr.map((t, i) => `${i + 1}. ${t}`).join('\n\n');
 
-  // 概要と回答を並列実行
+  // 概要と回答を実行
   if (summaryContentEl && (!cache.data[cacheKey])) {
     callGeminiSummary(apiKey, query, snippets, urlList, summaryContentEl, summaryTimeEl, cacheKey);
   }
