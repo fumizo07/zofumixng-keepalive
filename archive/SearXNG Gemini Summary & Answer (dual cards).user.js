@@ -1,13 +1,13 @@
 // ==UserScript==
-// @name        SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
-// @namespace   https://example.com/searxng-gemini-combined
-// @version     0.4.0
-// @description SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
-// @author      you
-// @match       *://zofumixng.onrender.com/*
-// @grant       none
-// @license     MIT
-// @run-at      document-end
+// @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
+// @namespace    https://example.com/searxng-gemini-combined
+// @version      0.4.1
+// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
+// @author       you
+// @match        *://zofumixng.onrender.com/*
+// @grant        none
+// @license      MIT
+// @run-at       document-end
 // ==/UserScript==
 
 (async () => {
@@ -39,11 +39,30 @@
     return q
       .trim()
       .toLowerCase()
-      .replace(/[ ]/g, ' ')
+      .replace(/[　]/g, ' ')
       .replace(/\s+/g, ' ');
   }
 
-  const formatResponse = text => text.replace(/\*\*(.+?)\*\*/g, '$1');
+  const formatResponse = text =>
+    text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // ★ Gemini回答を見やすく整形する軽い整形関数
+  function prettifyAnswer(text) {
+    if (!text) return '';
+    let t = String(text).trim();
+
+    // すでに改行がそれなりにあるならあまり触らない
+    const newlineCount = (t.match(/\n/g) || []).length;
+    if (newlineCount === 0) {
+      // 改行が全くないときだけ、「。」「！」「？」の後ろで改行を入れる
+      t = t.replace(/(。|！|？)/g, '$1\n');
+    }
+
+    // 3行以上の連続改行は2行に圧縮
+    t = t.replace(/\n{3,}/g, '\n\n');
+
+    return t.trim();
+  }
 
   // ===== AES-GCM で API キー暗号化保存 =====
   async function encrypt(text) {
@@ -100,11 +119,9 @@
 
   function setSummaryCache(cache) {
     const now = Date.now();
-    // 期限切れ掃除
     cache.keys = cache.keys.filter(
       k => cache.data[k]?.ts && now - cache.data[k].ts <= CONFIG.SUMMARY_CACHE_EXPIRE
     );
-    // 上限超えたら古い順に削除
     while (cache.keys.length > CONFIG.SUMMARY_CACHE_LIMIT) {
       delete cache.data[cache.keys.shift()];
     }
@@ -117,7 +134,6 @@
 
     let encrypted = localStorage.getItem('GEMINI_API_KEY');
     let key = null;
-
     if (encrypted) {
       try {
         key = await decrypt(encrypted);
@@ -150,22 +166,34 @@
     modal.style.boxShadow = '0 0 10px rgba(0,0,0,0.3)';
     modal.style.fontFamily = 'sans-serif';
     modal.innerHTML = `
-      <h2 style="margin-top:0;">Gemini APIキー設定</h2>
-      <p style="font-size:0.9em; line-height:1.6;">
+      <h2 style="margin-bottom:0.5em;">Gemini APIキー設定</h2>
+      <p style="font-size:0.9em;margin-bottom:1em;">
         以下のリンクからGoogle AI StudioにアクセスしてAPIキーを発行してください。<br>
-        <a href="https://aistudio.google.com" target="_blank" rel="noopener" style="color:#4a8af4;">
+        <a href="https://aistudio.google.com/app/apikey?hl=ja" target="_blank"
+           style="color:#0078d4;text-decoration:underline;">
           Google AI Studio でAPIキーを発行
         </a>
       </p>
-      <input id="gemini-api-input" type="password"
-        placeholder="AI Studio で取得した API キー"
-        style="width:100%; padding:0.5em; margin:0.5em 0 1em; font-size:1em;"/>
-      <div style="display:flex; gap:0.5em; justify-content:flex-end;">
-        <button id="gemini-cancel-btn" style="padding:0.4em 0.9em;">キャンセル</button>
-        <button id="gemini-save-btn" style="padding:0.4em 0.9em;">保存</button>
+      <input type="text" id="gemini-api-input" placeholder="APIキーを入力"
+        style="width:90%;padding:0.5em;margin-bottom:1em;
+               border:1px solid ${isDark ? '#555' : '#ccc'};
+               border-radius:6px;
+               background:${isDark ? '#333' : '#fafafa'};
+               color:inherit;"/>
+      <div style="display:flex;justify-content:center;gap:1em;">
+        <button id="gemini-save-btn"
+          style="background:#0078d4;color:#fff;border:none;
+                 padding:0.5em 1.2em;border-radius:8px;cursor:pointer;font-weight:bold;">
+          保存
+        </button>
+        <button id="gemini-cancel-btn"
+          style="background:${isDark ? '#555' : '#ccc'};
+                 color:${isDark ? '#fff' : '#000'};
+                 border:none;padding:0.5em 1.2em;border-radius:8px;cursor:pointer;">
+          キャンセル
+        </button>
       </div>
     `;
-
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
@@ -211,18 +239,13 @@
       pageNo++;
       const formData = new FormData(form);
       formData.set('pageno', pageNo);
-
       try {
-        const resp = await fetch(form.action, {
-          method: 'POST',
-          body: formData
-        });
+        const resp = await fetch(form.action, { method: 'POST', body: formData });
         const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
         const newResults = Array.from(
           doc.querySelectorAll('#main_results .result')
         ).slice(0, maxResults - currentResults);
         currentResults += newResults.length;
-
         if (currentResults < maxResults && newResults.length > 0) {
           const nextResults = await fetchNextPage();
           return newResults.concat(nextResults);
@@ -244,10 +267,18 @@
   function createSummaryBox(sidebar, afterElement = null) {
     const aiBox = document.createElement('div');
     aiBox.innerHTML = `
-      <div class="box">
-        <h3>Geminiによる概要</h3>
-        <div class="gemini-summary-content">取得中...</div>
-        <div class="gemini-summary-time" style="font-size:0.8em;opacity:0.7;margin-top:0.3em;"></div>
+      <div style="margin-top:1em;margin-bottom:0.5em;padding:0.5em;
+                  background:transparent;color:inherit;font-family:inherit;">
+        <div style="display:flex;justify-content:space-between;
+                    align-items:center;margin-bottom:0.5em;">
+          <div style="font-weight:600;font-size:1em;">Geminiによる概要</div>
+          <span class="gemini-summary-time"
+                style="font-size:0.8em;opacity:0.7;"></span>
+        </div>
+        <div class="gemini-summary-content"
+             style="margin-top:1.0em;margin-bottom:1.0em;line-height:1.5;">
+          取得中...
+        </div>
       </div>
     `;
 
@@ -267,11 +298,25 @@
   function createAnswerBox(mainResults, sidebar) {
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
+
+    // ★ 背景含め、このブロックは元コードのまま（変更なし）
     wrapper.innerHTML = `
-      <div class="box">
-        <h3>Gemini AI 回答</h3>
-        <div class="gemini-answer-content">問い合わせ中...</div>
-        <div class="gemini-answer-status" style="font-size:0.8em;opacity:0.7;margin-top:0.3em;"></div>
+      <div style="
+        border-radius:12px;
+        padding:0.75em 1em;
+        margin-bottom:0.5em;
+        border:1px solid ${isDark ? '#555' : '#ddd'};
+        background:${isDark ? '#111' : '#f9fafb'};
+        font-family:inherit;
+      ">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    margin-bottom:0.4em;">
+          <div style="font-weight:600;font-size:1em;">Gemini AI 回答</div>
+          <span class="gemini-answer-status"
+                style="font-size:0.8em;opacity:0.7;">問い合わせ中...</span>
+        </div>
+        <div class="gemini-answer-content"
+             style="line-height:1.6;white-space:pre-wrap;"></div>
       </div>
     `;
 
@@ -296,47 +341,33 @@
     let html = '';
 
     if (jsonData.intro) {
-      html += `
-${formatResponse(jsonData.intro)}
-
-`;
+      html += `<section><p>${formatResponse(jsonData.intro)}</p></section>`;
     }
 
     if (Array.isArray(jsonData.sections)) {
       jsonData.sections.forEach(sec => {
         if (sec.title && Array.isArray(sec.content)) {
-          html += `
-#### ${sec.title}
-
-`;
+          html += `<section><h4>${sec.title}</h4><ul>`;
           sec.content.forEach(item => {
-            html += `
-  * ${formatResponse(item)}
-`;
+            html += `<li>${formatResponse(item)}</li>`;
           });
-          html += '\n';
+          html += '</ul></section>';
         }
       });
     }
 
     if (Array.isArray(jsonData.urls) && jsonData.urls.length > 0) {
-      html += `
-#### 出典
-`;
+      html += '<section><h4>出典</h4><ul>';
       jsonData.urls.slice(0, 3).forEach(url => {
         try {
           const u = new URL(url);
           const domain = u.hostname.replace(/^www\./, '');
-          html += `
-  * [${domain}](${url})
-`;
+          html += `<li><a href="${url}" target="_blank">${domain}</a></li>`;
         } catch {
-          html += `
-  * ${url}
-`;
+          html += `<li>${url}</li>`;
         }
       });
-      html += '\n';
+      html += '</ul></section>';
     }
 
     contentEl.innerHTML = html;
@@ -347,7 +378,11 @@ ${formatResponse(jsonData.intro)}
 
     const cache = getSummaryCache();
     if (!cache.keys.includes(cacheKey)) cache.keys.push(cacheKey);
-    cache.data[cacheKey] = { html, ts: Date.now(), time: timeText };
+    cache.data[cacheKey] = {
+      html,
+      ts: Date.now(),
+      time: timeText
+    };
     setSummaryCache(cache);
   }
 
@@ -355,7 +390,8 @@ ${formatResponse(jsonData.intro)}
   async function callGeminiSummary(apiKey, query, snippets, urls, contentEl, timeEl, cacheKey) {
     const prompt = `
 検索クエリ: ${query}
-検索スニペット: ${snippets}
+検索スニペット:
+${snippets}
 
 指示:
 1. 上記のスニペットを元に、このクエリに対する概要を作成してください。
@@ -366,13 +402,16 @@ ${formatResponse(jsonData.intro)}
 {
   "intro": "概要の導入文",
   "sections": [
-    { "title": "セクションタイトル", "content": ["内容1", "内容2"] }
+    {
+      "title": "セクションタイトル",
+      "content": ["内容1", "内容2"]
+    }
   ],
   "urls": ["URL1", "URL2", "URL3"]
 }
 
 urlsには、参考になりそうなURLを3件まで入れてください。
-`.trim();
+    `.trim();
 
     try {
       const resp = await fetch(
@@ -380,14 +419,15 @@ urlsには、参考になりそうなURLを3件まで入れてください。
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }]
+          })
         }
       );
       if (!resp.ok) {
         contentEl.textContent = `APIエラー: ${resp.status}`;
         return;
       }
-
       const data = await resp.json();
       let parsed = {};
       try {
@@ -398,12 +438,10 @@ urlsには、参考になりそうなURLを3件まで入れてください。
         contentEl.textContent = 'JSON解析失敗';
         return;
       }
-
       // URLが空なら検索結果から補完
       if (!Array.isArray(parsed.urls) || parsed.urls.length === 0) {
         parsed.urls = urls.slice(0, 3);
       }
-
       renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey);
     } catch (e) {
       contentEl.textContent = '通信に失敗しました';
@@ -418,7 +456,8 @@ urlsには、参考になりそうなURLを3件まで入れてください。
 ユーザーのクエリに対して、以下の検索スニペットも参考にしながら、
 分かりやすく簡潔に回答してください。
 
-クエリ: ${query}
+クエリ:
+${query}
 
 検索スニペット（必要に応じて参照。足りなければ一般知識で補ってよい）:
 ${snippets}
@@ -428,7 +467,7 @@ ${snippets}
 - 箇条書きでも文章でも良いですが、長すぎないようにしてください。
 - マークダウンの見出しは使わず、通常のテキストのみを出力してください。
 - 500文字程度を目安にしてください。
-`.trim();
+    `.trim();
 
     try {
       const resp = await fetch(
@@ -436,7 +475,9 @@ ${snippets}
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }]
+          })
         }
       );
       if (!resp.ok) {
@@ -444,10 +485,10 @@ ${snippets}
         return;
       }
       const data = await resp.json();
-      const text =
-        data.candidates?.[0]?.content?.parts?.[0]?.text ||
-        '回答を取得できませんでした。';
-      answerEl.textContent = text.trim();
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text ||
+                  '回答を取得できませんでした。';
+      const pretty = prettifyAnswer(raw);
+      answerEl.textContent = pretty;
       statusEl.textContent = '完了';
     } catch (e) {
       statusEl.textContent = '通信エラー';
@@ -460,8 +501,9 @@ ${snippets}
   // SearXNGページか判定
   const form = document.querySelector('#search_form, form[action="/search"]');
   const sidebar = document.querySelector('#sidebar');
-  const mainResults = document.getElementById('main_results') ||
-                      document.querySelector('#results, .results');
+  const mainResults =
+    document.getElementById('main_results') ||
+    document.querySelector('#results, .results');
 
   if (!form || !mainResults) {
     log.info('SearXNG検索結果ページではないか、DOM構造が非対応です');
@@ -482,8 +524,11 @@ ${snippets}
   }
 
   // まず回答ボックスを作成（サイドバーがあれば必ずそこ）
-  const { contentEl: answerEl, statusEl: answerStatusEl, wrapper: answerWrapper } =
-    createAnswerBox(mainResults, sidebar);
+  const {
+    contentEl: answerEl,
+    statusEl: answerStatusEl,
+    wrapper: answerWrapper
+  } = createAnswerBox(mainResults, sidebar);
 
   // サマリ UI 作成（サイドバーがあれば回答の直後に置く）
   let summaryContentEl = null;
@@ -529,21 +574,11 @@ ${snippets}
     }
   }
 
-  const snippets = snippetsArr
-    .map((t, i) => `${i + 1}.\n${t}`)
-    .join('\n\n');
+  const snippets = snippetsArr.map((t, i) => `${i + 1}. ${t}`).join('\n\n');
 
   // 概要と回答を並列実行
   if (summaryContentEl && (!cache.data[cacheKey])) {
-    callGeminiSummary(
-      apiKey,
-      query,
-      snippets,
-      urlList,
-      summaryContentEl,
-      summaryTimeEl,
-      cacheKey
-    );
+    callGeminiSummary(apiKey, query, snippets, urlList, summaryContentEl, summaryTimeEl, cacheKey);
   }
   callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
 })();
