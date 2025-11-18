@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace    https://example.com/searxng-gemini-combined
-// @version      0.5.1
+// @version      0.7.0
 // @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
 // @author       you
 // @match        *://zofumixng.onrender.com/*
@@ -16,16 +16,16 @@
   // ===== 設定 =====
   const CONFIG = {
     MODEL_NAME: 'gemini-2.5-flash',
-    MAX_RESULTS: 20,                       // 最大取得件数（重い場合は 10 などに）
-    SNIPPET_CHAR_LIMIT: 5000,              // スニペットの総文字数上限
+    MAX_RESULTS: 20,
+    SNIPPET_CHAR_LIMIT: 5000,
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
-    SUMMARY_CACHE_LIMIT: 30,               // キャッシュするクエリ数
-    SUMMARY_CACHE_EXPIRE: 7 * 24 * 60 * 60 * 1000 // キャッシュ期限(ms) 7日
+    SUMMARY_CACHE_LIMIT: 30,
+    SUMMARY_CACHE_EXPIRE: 7 * 24 * 60 * 60 * 1000 // 7日
   };
 
   const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-  // 32文字のランダム英数字に変えることを推奨（ここを共通鍵として暗号化に使用）
+  // 32文字のランダム英数字推奨
   const FIXED_KEY = '1234567890abcdef1234567890abcdef';
 
   const log = {
@@ -46,41 +46,16 @@
   const formatResponse = text =>
     text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-  // ===== クエリのざっくり分類 =====
-  function classifyQuery(query) {
-    const q = (query || '').trim();
-
-    // レシピ系
-    if (/(レシピ|作り方|作る方法|作成方法|レシピ教えて)/i.test(q)) {
-      return 'recipe';
-    }
-
-    // 旅行・国/地域系（かなりラフな判定）
-    const travelWords = /(旅行|観光|治安|ビザ|入国|渡航|物価|安全性|海外)/;
-    const countryWords = /(インドネシア|タイ|アメリカ|米国|フランス|イギリス|英国|ドイツ|スペイン|イタリア|オーストラリア|カナダ|シンガポール|マレーシア|ベトナム|フィリピン|韓国|ソウル|バリ島|ハワイ|ヨーロッパ|EU|ニューヨーク|ロサンゼルス|サンフランシスコ|ロンドン|パリ)/i;
-
-    if (travelWords.test(q) || countryWords.test(q)) {
-      return 'travel';
-    }
-
-    return 'general';
-  }
-
-  // ★ Gemini回答を見やすく整形する軽い整形関数
+  // ===== 回答の軽い整形 =====
   function prettifyAnswer(text) {
     if (!text) return '';
     let t = String(text).trim();
 
-    // すでに改行がそれなりにあるならあまり触らない
     const newlineCount = (t.match(/\n/g) || []).length;
     if (newlineCount === 0) {
-      // 改行が全くないときだけ、「。」「！」「？」の後ろで改行を入れる
       t = t.replace(/(。|！|？)/g, '$1\n');
     }
-
-    // 3行以上の連続改行は2行に圧縮
     t = t.replace(/\n{3,}/g, '\n\n');
-
     return t.trim();
   }
 
@@ -283,7 +258,6 @@
   }
 
   // ===== サマリ UI 作成 =====
-  // afterElement が指定されている場合は、その直後に挿入
   function createSummaryBox(sidebar, afterElement = null) {
     const aiBox = document.createElement('div');
     aiBox.innerHTML = `
@@ -301,25 +275,21 @@
         </div>
       </div>
     `;
-
     if (afterElement && afterElement.parentNode === sidebar) {
       sidebar.insertBefore(aiBox, afterElement.nextSibling);
     } else {
       sidebar.insertBefore(aiBox, sidebar.firstChild);
     }
-
     const contentEl = aiBox.querySelector('.gemini-summary-content');
     const timeEl = aiBox.querySelector('.gemini-summary-time');
     return { contentEl, timeEl };
   }
 
   // ===== 回答 UI 作成 =====
-  // サイドバーがあれば必ずサイドバー先頭、なければメインカラム上部
   function createAnswerBox(mainResults, sidebar) {
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
 
-    // 背景含め、このブロックは元コードのまま
     wrapper.innerHTML = `
       <div style="
         border-radius:12px;
@@ -339,13 +309,11 @@
              style="line-height:1.6;white-space:pre-wrap;"></div>
       </div>
     `;
-
     if (sidebar) {
       sidebar.insertBefore(wrapper, sidebar.firstChild);
     } else {
       mainResults.parentNode.insertBefore(wrapper, mainResults);
     }
-
     const contentEl = wrapper.querySelector('.gemini-answer-content');
     const statusEl = wrapper.querySelector('.gemini-answer-status');
     return { contentEl, statusEl, wrapper };
@@ -353,8 +321,8 @@
 
   // ===== 概要レンダリング =====
   function renderSummaryFromJson(jsonData, contentEl, timeEl, cacheKey) {
-    if (!jsonData) {
-      contentEl.textContent = '無効な応答';
+    if (!jsonData || typeof jsonData !== 'object') {
+      contentEl.textContent = '概要を取得できませんでした。';
       return;
     }
 
@@ -390,7 +358,11 @@
       html += '</ul></section>';
     }
 
-    contentEl.innerHTML = html;
+    if (!html) {
+      contentEl.textContent = '概要を取得できませんでした。';
+    } else {
+      contentEl.innerHTML = html;
+    }
 
     const now = new Date();
     const timeText = now.toLocaleString('ja-JP', { hour12: false });
@@ -398,11 +370,7 @@
 
     const cache = getSummaryCache();
     if (!cache.keys.includes(cacheKey)) cache.keys.push(cacheKey);
-    cache.data[cacheKey] = {
-      html,
-      ts: Date.now(),
-      time: timeText
-    };
+    cache.data[cacheKey] = { html: contentEl.innerHTML, ts: Date.now(), time: timeText };
     setSummaryCache(cache);
   }
 
@@ -439,9 +407,7 @@ urlsには、参考になりそうなURLを3件まで入れてください。
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-          })
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
       if (!resp.ok) {
@@ -449,19 +415,25 @@ urlsには、参考になりそうなURLを3件まで入れてください。
         return;
       }
       const data = await resp.json();
-      let parsed = {};
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      let parsed = null;
       try {
-        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         const match = raw.match(/\{[\s\S]*\}/);
-        parsed = match ? JSON.parse(match[0]) : {};
+        parsed = match ? JSON.parse(match[0]) : null;
       } catch (e) {
-        contentEl.textContent = 'JSON解析失敗';
-        return;
+        parsed = null;
       }
-      // URLが空なら検索結果から補完
-      if (!Array.isArray(parsed.urls) || parsed.urls.length === 0) {
+
+      if (parsed && (!Array.isArray(parsed.urls) || parsed.urls.length === 0)) {
         parsed.urls = urls.slice(0, 3);
       }
+
+      if (!parsed || (!parsed.intro && !Array.isArray(parsed.sections) && !Array.isArray(parsed.urls))) {
+        contentEl.textContent = raw || '概要を取得できませんでした。';
+        return;
+      }
+
       renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey);
     } catch (e) {
       contentEl.textContent = '通信に失敗しました';
@@ -469,112 +441,104 @@ urlsには、参考になりそうなURLを3件まで入れてください。
     }
   }
 
-  // ===== Gemini 呼び出し：回答（クエリ種別ごとにフォーマット指定） =====
+  // ===== Gemini 呼び出し：回答（柔らかめロジック） =====
   async function callGeminiAnswer(apiKey, query, snippets, answerEl, statusEl) {
-    const mode = classifyQuery(query);
-
-    let prompt;
-
-    if (mode === 'recipe') {
-      // レシピ系
-      prompt = `
-あなたは日本人向けの家庭料理の専門家です。
+    const prompt = `
+あなたは日本語で回答するアシスタントです。
 ユーザーのクエリ: ${query}
 
 以下は検索スニペットです（必要な場合だけ参考にしてください。不要なら無視して構いません）:
 ${snippets}
 
-【出力フォーマット（日本語）】
-できるだけ簡潔に、次の形式で出力してください。
+【ステップ1：クエリの種類を心の中で判断】
+次のどれに近いかを「あなたの内部で」判断してください（出力には書かないでください）。
 
+A: 国・地域・旅行に関する質問
+   （国名・都市名・観光・治安・ビザ・渡航・海外旅行など、場所そのものを知りたい感じ）
+B: レシピ・作り方に関する質問
+   （料理名＋「レシピ」「作り方」「〜の作り方」など）
+C: それ以外の一般的な質問
+
+※ A/B/C のラベル名は出力に含めてはいけません。
+
+====================
+[A に近いと感じた場合（旅行・国/地域）]
+====================
+その国・地域について知りたい日本人に対して、
+- どんな場所か
+- ビザ
+- 治安
+- 通貨
+- 言語
+- タブー
+- 代表的な料理
+のうち、**特に重要だと思うもの**を中心に、バランスよく説明してください。
+
+【フォーマットの目安（日本語）】
+可能であれば、次の見出しを使ってください。ただし、情報が薄い部分は短く、重要な部分は少し厚めにして構いません。
+
+【概要】
+その国・地域がどんな場所かを、ごく簡潔に1〜2文で。
+
+【ビザ】
+日本人の短期観光についての一般的な傾向を簡潔に。
+不明・複雑な場合は「詳しい条件は大使館などの最新情報を確認してください」と添えてください。
+
+【治安】
+全体的な治安の印象と、注意が必要なポイントを短く。
+
+【通貨】
+通貨名と通貨コード（例：インドネシア・ルピア（IDR））を1行程度で。
+
+【言語】
+主な公用語や、日常でよく使われる言語を1〜2行で。
+
+【タブー】
+観光客が避けるべき代表的なタブーやNG行為を、重要なものから数行で。
+
+【料理】
+代表的な郷土料理や有名な食べ物を2〜5個ほど、簡単な説明つきで。
+
+【柔軟性のルール】
+- 上記の見出しは「全部必須」ではありません。重要度が低いと感じる項目は1行だけでも構いません。
+- 逆に、その国を理解するうえで他に重要な点（例: 物価、ベストシーズン、チップ文化など）があれば、
+  必要に応じて【その他】という見出しを追加しても構いません。
+- 全体で日本語およそ500〜800文字を目安にしますが、多少前後しても問題ありません。
+
+====================
+[B に近いと感じた場合（レシピ）]
+====================
 【材料】
-・2人分を想定し、必要なものだけ3〜10個に絞って箇条書き
+・2人分を想定し、必要な材料だけを3〜10個程度に絞って箇条書きで。
 
 【手順】
 1. 下ごしらえ
-2. 調理の手順
-3. 仕上げ
+2. 調理のメイン手順
+3. 仕上げや盛り付け
 
-のように、3〜7ステップ程度に番号付きで書いてください。
-
-【その他の条件】
-- 前置きや長い説明文は書かないでください（いきなり【材料】から始める）。
-- 全体で日本語300〜600文字程度を目安にしてください。
-- マークダウン記法（# や * など）は使わないでください。
-      `.trim();
-    } else if (mode === 'travel') {
-      // 国・地域・旅行系
-      prompt = `
-あなたは日本人旅行者向けのガイドです。
-ユーザーのクエリ: ${query}
-
-以下は検索スニペットです（必要に応じて参考にしてください）:
-${snippets}
-
-【目的】
-外国や外国の地域について、
-- ビザが必要か
-- 治安はどうか
-- 通貨は何か
-- 主に何語を話すか
-- 観光客が避けるべきタブー
-- 代表的な料理
-を日本人目線で簡潔に伝えてください。
-
-【出力フォーマット（日本語）】
-必ず次の見出しだけを、この順番で出力してください。
-
-【概要】
-その国・地域がどんな場所かを「できれば1文」で、ごく簡潔にまとめる。
-（長くても2文まで）
-
-【ビザ】
-日本のパスポートで短期観光する場合の一般的な傾向を1〜2文で。
-（例：「日本からの短期観光では〇日以内の滞在ならビザ不要な場合が多い。ただし最新の公式情報を要確認。」）
-不明な場合や条件が複雑な場合は、その旨を書きつつ
-「最終的には大使館などの最新の公式情報を確認してください」と必ず付ける。
-
-【治安】
-- 全体的な治安の印象を1〜2文。
-- 注意が必要なポイントがあれば1〜3行で簡潔に。
-
-【通貨】
-- 通貨名と通貨コード（例：インドネシア・ルピア（IDR））を1行で。
-
-【言語】
-- 主に使われている公用語／日常でよく使われる言語を1〜2行で。
-
-【タブー】
-- 観光客が避けるべき代表的なタブーやNG行為を2〜5行で。
-  （宗教・文化・服装・写真撮影など、重要度が高いものを優先）
-
-【料理】
-- 代表的な郷土料理や有名な食べ物を2〜5個ほど、簡単な説明つきで。
-  （例：「ナシゴレン：〜」「サテ：〜」のような形式）
+のように、3〜7ステップ程度で、家庭で再現しやすいように書いてください。
 
 【その他の条件】
-- 全体で日本語500〜800文字程度に収めてください。
+- 前置きや長い前説は書かず、いきなり【材料】から始めてください。
 - マークダウン記法（# や * など）は使わないでください。
-- 「〜だと思われます」など曖昧すぎる表現は避け、一般的な傾向として表現してください
-  （ただし最新情報の確認は促してください）。
-      `.trim();
-    } else {
-      // その他一般のクエリ
-      prompt = `
-あなたは日本語で分かりやすく説明するアシスタントです。
-ユーザーのクエリ: ${query}
+- 文字数はきっちり守る必要はありませんが、読みやすい分量（だいたい300〜600文字程度）を意識してください。
 
-以下は検索スニペットです（必要な場合にだけ参考にしてください）:
-${snippets}
-
+====================
+[C に近いと感じた場合（その他）]
+====================
 【出力の方針】
 - 前置きは書かず、いきなり本題から説明してください。
 - 内容はできるだけ簡潔に、しかし要点は落とさないようにします。
 - 3〜5文程度、全体で日本語300〜500文字ぐらいを目安にしてください。
 - マークダウン記法（# や * など）は使わないでください。
-- 箇条書きにする場合も、「・」から始めるシンプルなスタイルだけにしてください。
-      `.trim();
-    }
+- 箇条書きにする場合は、「・」から始めるシンプルなスタイルだけにしてください。
+
+====================
+【重要な注意】
+====================
+- 出力には、A/B/C のラベルや「これはAです」のような説明は絶対に書かないでください。
+- 固定の型にこだわりすぎず、「このユーザーが今知りたいこと」が伝わるように、多少フォーマットを崩しても構いません。
+    `.trim();
 
     try {
       const resp = await fetch(
@@ -582,9 +546,7 @@ ${snippets}
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }]
-          })
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
       if (!resp.ok) {
@@ -592,8 +554,9 @@ ${snippets}
         return;
       }
       const data = await resp.json();
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text ||
-                  '回答を取得できませんでした。';
+      const raw =
+        data.candidates?.[0]?.content?.parts?.[0]?.text ||
+        '回答を取得できませんでした。';
       const pretty = prettifyAnswer(raw);
       answerEl.textContent = pretty;
       statusEl.textContent = '完了';
@@ -604,7 +567,6 @@ ${snippets}
   }
 
   // ===== メイン処理 =====
-
   const form = document.querySelector('#search_form, form[action="/search"]');
   const sidebar = document.querySelector('#sidebar');
   const mainResults =
@@ -629,14 +591,12 @@ ${snippets}
     return;
   }
 
-  // まず回答ボックス
   const {
     contentEl: answerEl,
     statusEl: answerStatusEl,
     wrapper: answerWrapper
   } = createAnswerBox(mainResults, sidebar);
 
-  // 概要ボックス（回答の直後）
   let summaryContentEl = null;
   let summaryTimeEl = null;
   if (sidebar) {
@@ -645,7 +605,6 @@ ${snippets}
     summaryTimeEl = s.timeEl;
   }
 
-  // 概要キャッシュ確認
   const cacheKey = normalizeQuery(query);
   const cache = getSummaryCache();
   if (summaryContentEl && cache.data[cacheKey]) {
@@ -655,7 +614,6 @@ ${snippets}
     log.info('概要: キャッシュを使用:', query);
   }
 
-  // 検索結果からスニペット収集
   const results = await fetchSearchResults(form, mainResults, CONFIG.MAX_RESULTS);
   const excludePatterns = [/google キャッシュ$/i];
 
@@ -682,8 +640,7 @@ ${snippets}
 
   const snippets = snippetsArr.map((t, i) => `${i + 1}. ${t}`).join('\n\n');
 
-  // 概要と回答を実行
-  if (summaryContentEl && (!cache.data[cacheKey])) {
+  if (summaryContentEl && !cache.data[cacheKey]) {
     callGeminiSummary(apiKey, query, snippets, urlList, summaryContentEl, summaryTimeEl, cacheKey);
   }
   callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
