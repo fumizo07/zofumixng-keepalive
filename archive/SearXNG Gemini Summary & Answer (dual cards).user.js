@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name        SearXNG Gemini Answer + Summary (zofumixng, concise+fixed)
+// @name        SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace   https://example.com/searxng-gemini-combined
-// @version     0.7.0
-// @description SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を表示するスクリプト（zofumixng専用・サイドバーがあればサイドバー上部）
+// @version     0.4.0
+// @description SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
 // @author      you
 // @match       *://zofumixng.onrender.com/*
 // @grant       none
@@ -15,9 +15,9 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    MODEL_NAME: 'gemini-2.5-flash',        // モデル名
-    MAX_RESULTS: 10,                       // 最大取得件数（APIエラー軽減用に少し絞る）
-    SNIPPET_CHAR_LIMIT: 3000,              // スニペットの総文字数上限（短くして負荷軽減）
+    MODEL_NAME: 'gemini-2.0-flash',        // モデル名
+    MAX_RESULTS: 20,                       // 最大取得件数（重い場合は 10 などに）
+    SNIPPET_CHAR_LIMIT: 5000,              // スニペットの総文字数上限
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
     SUMMARY_CACHE_LIMIT: 30,               // キャッシュするクエリ数
     SUMMARY_CACHE_EXPIRE: 7 * 24 * 60 * 60 * 1000 // キャッシュ期限(ms) 7日
@@ -240,6 +240,7 @@
   }
 
   // ===== サマリ UI 作成 =====
+  // afterElement が指定されている場合は、その直後に挿入
   function createSummaryBox(sidebar, afterElement = null) {
     const aiBox = document.createElement('div');
     aiBox.innerHTML = `
@@ -262,18 +263,15 @@
   }
 
   // ===== 回答 UI 作成 =====
+  // サイドバーがあれば必ずサイドバー先頭、なければメインカラム上部
   function createAnswerBox(mainResults, sidebar) {
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
     wrapper.innerHTML = `
       <div class="box">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5em;">
-          <h3 style="margin:0;">Gemini AI 回答</h3>
-          <div class="gemini-answer-status"
-               style="font-size:0.8em;opacity:0.7;margin-top:0.2em;text-align:right;min-width:3em;">
-          </div>
-        </div>
-        <div class="gemini-answer-content" style="margin-top:0.5em;">問い合わせ中...</div>
+        <h3>Gemini AI 回答</h3>
+        <div class="gemini-answer-content">問い合わせ中...</div>
+        <div class="gemini-answer-status" style="font-size:0.8em;opacity:0.7;margin-top:0.3em;"></div>
       </div>
     `;
 
@@ -285,10 +283,6 @@
 
     const contentEl = wrapper.querySelector('.gemini-answer-content');
     const statusEl = wrapper.querySelector('.gemini-answer-status');
-
-    // ★ 改行をそのまま表示（white-space: pre-wrap）
-    contentEl.style.whiteSpace = 'pre-wrap';
-
     return { contentEl, statusEl, wrapper };
   }
 
@@ -302,33 +296,47 @@
     let html = '';
 
     if (jsonData.intro) {
-      html += `<p>${formatResponse(jsonData.intro)}</p>\n`;
+      html += `
+${formatResponse(jsonData.intro)}
+
+`;
     }
 
     if (Array.isArray(jsonData.sections)) {
       jsonData.sections.forEach(sec => {
         if (sec.title && Array.isArray(sec.content)) {
-          html += `<h4>${sec.title}</h4>\n<ul>\n`;
+          html += `
+#### ${sec.title}
+
+`;
           sec.content.forEach(item => {
-            html += `  <li>${formatResponse(item)}</li>\n`;
+            html += `
+  * ${formatResponse(item)}
+`;
           });
-          html += `</ul>\n`;
+          html += '\n';
         }
       });
     }
 
     if (Array.isArray(jsonData.urls) && jsonData.urls.length > 0) {
-      html += `<h4>出典</h4>\n<ul>\n`;
-      jsonData.urls.slice(0, 5).forEach(url => {
+      html += `
+#### 出典
+`;
+      jsonData.urls.slice(0, 3).forEach(url => {
         try {
           const u = new URL(url);
           const domain = u.hostname.replace(/^www\./, '');
-          html += `  <li><a href="${url}" target="_blank" rel="noopener noreferrer">${domain}</a></li>\n`;
+          html += `
+  * [${domain}](${url})
+`;
         } catch {
-          html += `  <li>${url}</li>\n`;
+          html += `
+  * ${url}
+`;
         }
       });
-      html += `</ul>\n`;
+      html += '\n';
     }
 
     contentEl.innerHTML = html;
@@ -343,60 +351,35 @@
     setSummaryCache(cache);
   }
 
-  // ===== クエリ分類 =====
-  function classifyQuery(query) {
-    const s = (query || '').trim();
-    if (/レシピ|作り方|作る方法|作成方法/i.test(s)) return 'recipe';
-    if (/旅行|観光|治安|ビザ|入国|渡航|ツアー/i.test(s)) return 'travel';
-    return 'general';
-  }
-
   // ===== Gemini 呼び出し：概要 =====
   async function callGeminiSummary(apiKey, query, snippets, urls, contentEl, timeEl, cacheKey) {
-    const urlListText =
-      Array.isArray(urls) && urls.length
-        ? urls.map((u, i) => `[${i + 1}] ${u}`).join('\n')
-        : '(URLなし)';
-
     const prompt = `
 検索クエリ: ${query}
-
-以下は、このクエリに対するウェブ検索結果の上位サイト（最大${Array.isArray(urls) ? urls.length : 0}件）のスニペットとURLです。
-
-【スニペット一覧】
-${snippets}
-
-【URL一覧】
-${urlListText}
+検索スニペット: ${snippets}
 
 指示:
-1. 上記のスニペットを元に、これら上位サイト全体に共通する内容を日本語で3〜5文にまとめてください。
-2. 情報が不足する場合は「情報が限られています」と明示し、推測する場合は推測であると分かるように書いてください。
-3. 概要は600字以内としてください。
+1. 上記のスニペットを元に、このクエリに対する概要を作成してください。
+2. 情報が不足する場合は「情報が限られています」と明示し、必要であれば推測も行ってください。
+3. 概要は600字以内。
 4. 出力は必ず次のJSON形式にしてください。
 
 {
-  "intro": "概要の導入文（1〜2文）",
+  "intro": "概要の導入文",
   "sections": [
     { "title": "セクションタイトル", "content": ["内容1", "内容2"] }
   ],
   "urls": ["URL1", "URL2", "URL3"]
 }
 
-制約:
-- urls には、【URL一覧】に含まれるURLだけをそのまま入れてください。新しいURLを作成しないでください。
-- urls の件数は1〜5件程度としてください。
+urlsには、参考になりそうなURLを3件まで入れてください。
 `.trim();
 
     try {
       const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.MODEL_NAME}:generateContent`,
+        `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
@@ -416,8 +399,9 @@ ${urlListText}
         return;
       }
 
+      // URLが空なら検索結果から補完
       if (!Array.isArray(parsed.urls) || parsed.urls.length === 0) {
-        parsed.urls = Array.isArray(urls) ? urls.slice(0, 5) : [];
+        parsed.urls = urls.slice(0, 3);
       }
 
       renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey);
@@ -427,111 +411,31 @@ ${urlListText}
     }
   }
 
-  // ===== Gemini 呼び出し：回答（簡潔＆整理された形式） =====
+  // ===== Gemini 呼び出し：回答 =====
   async function callGeminiAnswer(apiKey, query, snippets, answerEl, statusEl) {
-    const mode = classifyQuery(query);
+    const prompt = `
+あなたは検索エンジンのAIアシスタントです。
+ユーザーのクエリに対して、以下の検索スニペットも参考にしながら、
+分かりやすく簡潔に回答してください。
 
-    let prompt;
+クエリ: ${query}
 
-    if (mode === 'recipe') {
-      // レシピ系
-      prompt = `
-あなたは日本人家庭向けの料理研究家です。
-ユーザーのクエリ: ${query}
-
-以下は検索結果から抜き出したスニペットです（必要な場合のみ参照してください）:
+検索スニペット（必要に応じて参照。足りなければ一般知識で補ってよい）:
 ${snippets}
 
-【重要な指示】
-・前置きや長い雑談は禁止です。
-・最初に1行で「結論：〜」を書いてください。
-・そのあとに、次の構成でシンプルに書いてください。
-
-【材料】
-- 2人分を想定し、10品目以内に絞ってください。
-
-【手順】
-1. 〜
-2. 〜
-3. 〜
-のように、3〜7ステップ程度に分けてください。
-
-【ポイント】
-- 失敗しやすい点とコツを3〜5個だけ箇条書きにしてください。
-
-・全体でおおよそ600〜900文字以内に収めてください。
+条件:
+- 回答はユーザーの言語に合わせてください（日本語クエリなら日本語）。
+- 箇条書きでも文章でも良いですが、長すぎないようにしてください。
+- マークダウンの見出しは使わず、通常のテキストのみを出力してください。
+- 500文字程度を目安にしてください。
 `.trim();
-    } else if (mode === 'travel') {
-      // 旅行・国情報系
-      prompt = `
-あなたは日本人旅行者向けのガイドです。
-ユーザーのクエリ: ${query}
-
-以下は検索結果から抜き出したスニペットです（必要な場合のみ参照してください）:
-${snippets}
-
-【重要な指示】
-・前置きや長い導入文は禁止です。
-・最初に1行で「結論：〜」と、この国や地域のざっくりした印象を書いてください。
-・そのあとに、次の見出しで簡潔にまとめてください。
-
-【基本情報】
-- 場所／代表的な都市
-- 気候（ざっくりで可）
-
-【治安】
-- 治安の全体感を2〜3文で説明
-- 特に注意すべきポイントを箇条書きで3〜5個
-
-【旅行のコツ】
-- 初めての人向けに「ここだけ押さえればOK」というポイントを3〜5個
-
-【ビザ・入国】
-- 「日本国籍の短期旅行ではビザが不要なことが多い／必要なことが多い」など、
-  あくまで一般的な傾向だけを書き、
-  「最終的には最新の公式情報を確認してください」という一文で締めてください。
-
-・全体で800文字以内にしてください。
-`.trim();
-    } else {
-      // 一般用語・サービス名など
-      prompt = `
-あなたは日本語でわかりやすく解説する専門家です。
-ユーザーのクエリ: ${query}
-
-以下は検索結果から抜き出したスニペットです（必要な場合のみ参照してください）:
-${snippets}
-
-【重要な指示】
-・前置きや自己紹介の文章は禁止です。
-・最初に1行で「結論：〜」として、このキーワードを一言で説明してください。
-・そのあと、次の構成で簡潔にまとめてください。
-
-【概要】
-- 内容を2〜3文で説明してください。
-
-【何ができるか／使い方】
-- ユーザー視点で「どう使うか」「何の役に立つか」を3〜5行で説明してください。
-
-【注意点】
-- 気をつけるべき点やよくある誤解を2〜4行で書いてください。
-
-【関連キーワード】
-- 日本語で3〜5個、関連用語を列挙してください（例：A、B、C）。
-
-・全体で600文字以内を目安にしてください。
-`.trim();
-    }
 
     try {
       const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.MODEL_NAME}:generateContent`,
+        `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
@@ -543,7 +447,7 @@ ${snippets}
       const text =
         data.candidates?.[0]?.content?.parts?.[0]?.text ||
         '回答を取得できませんでした。';
-      answerEl.textContent = text.trim(); // 改行は white-space: pre-wrap でそのまま表示
+      answerEl.textContent = text.trim();
       statusEl.textContent = '完了';
     } catch (e) {
       statusEl.textContent = '通信エラー';
@@ -553,6 +457,7 @@ ${snippets}
 
   // ===== メイン処理 =====
 
+  // SearXNGページか判定
   const form = document.querySelector('#search_form, form[action="/search"]');
   const sidebar = document.querySelector('#sidebar');
   const mainResults = document.getElementById('main_results') ||
@@ -576,15 +481,15 @@ ${snippets}
     return;
   }
 
-  // 回答ボックス（サイドバーがあれば必ずそっち）
+  // まず回答ボックスを作成（サイドバーがあれば必ずそこ）
   const { contentEl: answerEl, statusEl: answerStatusEl, wrapper: answerWrapper } =
     createAnswerBox(mainResults, sidebar);
 
-  // 概要ボックス（サイドバーがあれば回答の直後）
+  // サマリ UI 作成（サイドバーがあれば回答の直後に置く）
   let summaryContentEl = null;
   let summaryTimeEl = null;
   if (sidebar) {
-    const s = createSummaryBox(sidebar, answerWrapper);
+    const s = createSummaryBox(sidebar, answerWrapper); // 回答の直後に概要
     summaryContentEl = s.contentEl;
     summaryTimeEl = s.timeEl;
   }
@@ -599,55 +504,46 @@ ${snippets}
     log.info('概要: キャッシュを使用:', query);
   }
 
-  // 検索結果からスニペット収集
+  // 検索結果からスニペット収集（概要・回答の共通ソース）
   const results = await fetchSearchResults(form, mainResults, CONFIG.MAX_RESULTS);
   const excludePatterns = [/google キャッシュ$/i];
 
-  const answerSnippetsArr = [];
-  const summarySnippetsArr = [];
+  const snippetsArr = [];
   const urlList = [];
   let totalChars = 0;
-  const SUMMARY_TOP_K = 5;
 
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
+  for (const r of results) {
     const snippetEl = r.querySelector('.result__snippet') || r;
     let text = snippetEl.innerText.trim();
-
     excludePatterns.forEach(p => {
       text = text.replace(p, '').trim();
     });
     if (!text) continue;
-
-    // 回答用：総量制限
     if (totalChars + text.length > CONFIG.SNIPPET_CHAR_LIMIT) break;
-    answerSnippetsArr.push(text);
+    snippetsArr.push(text);
     totalChars += text.length;
 
-    // 概要用：上位 SUMMARY_TOP_K 件
-    if (i < SUMMARY_TOP_K) {
-      summarySnippetsArr.push(text);
-      const link = r.querySelector('a');
-      if (link && link.href) {
-        urlList.push(link.href);
-      }
+    const link = r.querySelector('a');
+    if (link && link.href) {
+      urlList.push(link.href);
     }
   }
 
-  const answerSnippets  = answerSnippetsArr.map((t, i) => `${i + 1}.\n${t}`).join('\n\n');
-  const summarySnippets = summarySnippetsArr.map((t, i) => `${i + 1}.\n${t}`).join('\n\n');
+  const snippets = snippetsArr
+    .map((t, i) => `${i + 1}.\n${t}`)
+    .join('\n\n');
 
-  // 概要と回答を順番に実行（同時に叩かない）
-  if (summaryContentEl && !cache.data[cacheKey]) {
-    await callGeminiSummary(
+  // 概要と回答を並列実行
+  if (summaryContentEl && (!cache.data[cacheKey])) {
+    callGeminiSummary(
       apiKey,
       query,
-      summarySnippets,
+      snippets,
       urlList,
       summaryContentEl,
       summaryTimeEl,
       cacheKey
     );
   }
-  await callGeminiAnswer(apiKey, query, answerSnippets, answerEl, answerStatusEl);
+  callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
 })();
