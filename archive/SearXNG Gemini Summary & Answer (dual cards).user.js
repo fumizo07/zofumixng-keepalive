@@ -15,7 +15,7 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    MODEL_NAME: 'gemini-2.5-flash',
+    MODEL_NAME: 'gemini-2.0-flash',
     MAX_RESULTS: 20,
     SNIPPET_CHAR_LIMIT: 5000,
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
