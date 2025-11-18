@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name        SearXNG Gemini Answer + Summary (zofumixng, concise)
+// @name        SearXNG Gemini Answer + Summary (zofumixng, concise+fixed)
 // @namespace   https://example.com/searxng-gemini-combined
-// @version     0.6.0
+// @version     0.7.0
 // @description SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を表示するスクリプト（zofumixng専用・サイドバーがあればサイドバー上部）
 // @author      you
 // @match       *://zofumixng.onrender.com/*
@@ -15,9 +15,9 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    MODEL_NAME: 'gemini-2.5-flash',        // 最新の Flash 系モデル
-    MAX_RESULTS: 20,                       // 最大取得件数
-    SNIPPET_CHAR_LIMIT: 5000,              // スニペットの総文字数上限
+    MODEL_NAME: 'gemini-2.5-flash',        // モデル名
+    MAX_RESULTS: 10,                       // 最大取得件数（APIエラー軽減用に少し絞る）
+    SNIPPET_CHAR_LIMIT: 3000,              // スニペットの総文字数上限（短くして負荷軽減）
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
     SUMMARY_CACHE_LIMIT: 30,               // キャッシュするクエリ数
     SUMMARY_CACHE_EXPIRE: 7 * 24 * 60 * 60 * 1000 // キャッシュ期限(ms) 7日
@@ -267,9 +267,13 @@
     wrapper.style.margin = '0 0 1em 0';
     wrapper.innerHTML = `
       <div class="box">
-        <h3>Gemini AI 回答</h3>
-        <div class="gemini-answer-content">問い合わせ中...</div>
-        <div class="gemini-answer-status" style="font-size:0.8em;opacity:0.7;margin-top:0.3em;"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5em;">
+          <h3 style="margin:0;">Gemini AI 回答</h3>
+          <div class="gemini-answer-status"
+               style="font-size:0.8em;opacity:0.7;margin-top:0.2em;text-align:right;min-width:3em;">
+          </div>
+        </div>
+        <div class="gemini-answer-content" style="margin-top:0.5em;">問い合わせ中...</div>
       </div>
     `;
 
@@ -281,6 +285,10 @@
 
     const contentEl = wrapper.querySelector('.gemini-answer-content');
     const statusEl = wrapper.querySelector('.gemini-answer-status');
+
+    // ★ 改行をそのまま表示（white-space: pre-wrap）
+    contentEl.style.whiteSpace = 'pre-wrap';
+
     return { contentEl, statusEl, wrapper };
   }
 
@@ -382,10 +390,13 @@ ${urlListText}
 
     try {
       const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.MODEL_NAME}:generateContent`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
+          },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
@@ -405,7 +416,6 @@ ${urlListText}
         return;
       }
 
-      // URLが空なら検索結果URLから補完（最大5件）
       if (!Array.isArray(parsed.urls) || parsed.urls.length === 0) {
         parsed.urls = Array.isArray(urls) ? urls.slice(0, 5) : [];
       }
@@ -475,7 +485,6 @@ ${snippets}
 
 【旅行のコツ】
 - 初めての人向けに「ここだけ押さえればOK」というポイントを3〜5個
-  （例：エリア選び、服装、チップ、ぼったくり対策など）
 
 【ビザ・入国】
 - 「日本国籍の短期旅行ではビザが不要なことが多い／必要なことが多い」など、
@@ -516,10 +525,13 @@ ${snippets}
 
     try {
       const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.MODEL_NAME}:generateContent`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
+          },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
         }
       );
@@ -531,7 +543,7 @@ ${snippets}
       const text =
         data.candidates?.[0]?.content?.parts?.[0]?.text ||
         '回答を取得できませんでした。';
-      answerEl.textContent = text.trim();
+      answerEl.textContent = text.trim(); // 改行は white-space: pre-wrap でそのまま表示
       statusEl.textContent = '完了';
     } catch (e) {
       statusEl.textContent = '通信エラー';
@@ -625,9 +637,9 @@ ${snippets}
   const answerSnippets  = answerSnippetsArr.map((t, i) => `${i + 1}.\n${t}`).join('\n\n');
   const summarySnippets = summarySnippetsArr.map((t, i) => `${i + 1}.\n${t}`).join('\n\n');
 
-  // 概要と回答を並列実行
+  // 概要と回答を順番に実行（同時に叩かない）
   if (summaryContentEl && !cache.data[cacheKey]) {
-    callGeminiSummary(
+    await callGeminiSummary(
       apiKey,
       query,
       summarySnippets,
@@ -637,5 +649,5 @@ ${snippets}
       cacheKey
     );
   }
-  callGeminiAnswer(apiKey, query, answerSnippets, answerEl, answerStatusEl);
+  await callGeminiAnswer(apiKey, query, answerSnippets, answerEl, answerStatusEl);
 })();
