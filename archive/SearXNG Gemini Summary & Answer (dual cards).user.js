@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        SearXNG Gemini Summary & Answer (dual cards)
 // @description SearXNG の検索結果上位から概要を作りつつ、クエリに応じた詳しい回答も Gemini で生成して表示します。
-// @match       *://*/search*
+// @match       *://zofumixng.onrender.com/*
 // @run-at      document-idle
 // @grant       none
 // @version     0.1.0
