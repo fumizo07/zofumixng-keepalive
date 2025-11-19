@@ -2,7 +2,7 @@
 // @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace    https://example.com/searxng-gemini-combined
 // @version      0.9.1
-// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要（上位サイト要約＋全体まとめ）」を表示（サイドバーがあれば常にサイドバー上部に配置）
+// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要（上位サイト要約＋全体まとめ）」を表示（長文は折りたたみ対応、サイドバーがあれば常にサイドバー上部に配置）
 // @author       you
 // @match        *://zofumixng.onrender.com/*
 // @grant        none
@@ -15,7 +15,7 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    MODEL_NAME: 'gemini-2.0-flash',        // いま安定している 2.0 を使用
+    MODEL_NAME: 'gemini-2.0-flash',
     MAX_RESULTS: 20,
     SNIPPET_CHAR_LIMIT: 5000,
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
@@ -57,6 +57,49 @@
     }
     t = t.replace(/\n{3,}/g, '\n\n');
     return t.trim();
+  }
+
+  // ===== 長文折りたたみ（もっと見る / 閉じる） =====
+  function setupCollapsible(el, maxHeightPx = 260) {
+    if (!el || !el.parentNode) return;
+
+    // レイアウト確定後に高さを判定
+    requestAnimationFrame(() => {
+      const fullHeight = el.scrollHeight;
+      if (!fullHeight || fullHeight <= maxHeightPx + 10) return;
+
+      el.style.maxHeight = maxHeightPx + 'px';
+      el.style.overflow = 'hidden';
+      el.style.position = el.style.position || 'relative';
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.textContent = 'もっと見る';
+      toggle.style.border = 'none';
+      toggle.style.background = 'none';
+      toggle.style.padding = '0';
+      toggle.style.marginTop = '0.25em';
+      toggle.style.cursor = 'pointer';
+      toggle.style.fontSize = '0.85em';
+      toggle.style.opacity = '0.8';
+      toggle.style.float = 'right';
+
+      let expanded = false;
+      toggle.addEventListener('click', () => {
+        expanded = !expanded;
+        if (expanded) {
+          el.style.maxHeight = 'none';
+          el.style.overflow = 'visible';
+          toggle.textContent = '閉じる';
+        } else {
+          el.style.maxHeight = maxHeightPx + 'px';
+          el.style.overflow = 'hidden';
+          toggle.textContent = 'もっと見る';
+        }
+      });
+
+      el.parentNode.appendChild(toggle);
+    });
   }
 
   // ===== AES-GCM で API キー暗号化保存 =====
@@ -378,6 +421,7 @@
       contentEl.textContent = '概要を取得できませんでした。';
     } else {
       contentEl.innerHTML = html;
+      setupCollapsible(contentEl, 260); // ★ 概要にも折りたたみ
     }
 
     const now = new Date();
@@ -468,7 +512,6 @@ ${summarySnippets}
         parsed = null;
       }
 
-      // URL補完
       if (parsed && (!Array.isArray(parsed.urls) || parsed.urls.length === 0)) {
         parsed.urls = summaryUrls.slice(0, 5);
       }
@@ -580,6 +623,7 @@ C: それ以外の一般的な質問
         '回答を取得できませんでした。';
       const pretty = prettifyAnswer(raw);
       answerEl.textContent = pretty;
+      setupCollapsible(answerEl, 260); // ★ 回答にも折りたたみ
       statusEl.textContent = '完了';
     } catch (e) {
       statusEl.textContent = '通信エラー';
@@ -632,6 +676,7 @@ C: それ以外の一般的な質問
     const cached = cache.data[cacheKey];
     summaryContentEl.innerHTML = cached.html;
     summaryTimeEl.textContent = cached.time;
+    setupCollapsible(summaryContentEl, 260); // ★ キャッシュ表示時も折りたたみ適用
     log.info('概要: キャッシュを使用:', query);
   }
 
