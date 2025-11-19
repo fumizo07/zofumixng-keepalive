@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace    https://example.com/searxng-gemini-combined
-// @version      0.7.0
-// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要」を両方表示する統合スクリプト（サイドバーがあれば常にサイドバー上部に配置）
+// @version      0.8.0
+// @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要（上位3サイト要約＋全体まとめ）」を表示（サイドバーがあれば常にサイドバー上部に配置）
 // @author       you
 // @match        *://zofumixng.onrender.com/*
 // @grant        none
@@ -15,7 +15,7 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    MODEL_NAME: 'gemini-2.0-flash',
+    MODEL_NAME: 'gemini-2.0-flash',        // ★今は安定している 2.0 をデフォルトに
     MAX_RESULTS: 20,
     SNIPPET_CHAR_LIMIT: 5000,
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
@@ -25,7 +25,7 @@
 
   const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-  // 32文字のランダム英数字推奨
+  // 32文字のランダム英数字推奨（共通鍵）
   const FIXED_KEY = '1234567890abcdef1234567890abcdef';
 
   const log = {
@@ -44,7 +44,7 @@
   }
 
   const formatResponse = text =>
-    text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    String(text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
   // ===== 回答の軽い整形 =====
   function prettifyAnswer(text) {
@@ -175,14 +175,14 @@
                border-radius:6px;
                background:${isDark ? '#333' : '#fafafa'};
                color:inherit;"/>
-      <div style="display:flex;justify-content:center;gap:1em;">
+      <div style="display:flex;justify-content:space-between;gap:1em;max-width:260px;margin:0 auto;">
         <button id="gemini-save-btn"
-          style="background:#0078d4;color:#fff;border:none;
+          style="flex:1;background:#0078d4;color:#fff;border:none;
                  padding:0.5em 1.2em;border-radius:8px;cursor:pointer;font-weight:bold;">
           保存
         </button>
         <button id="gemini-cancel-btn"
-          style="background:${isDark ? '#555' : '#ccc'};
+          style="flex:1;background:${isDark ? '#555' : '#ccc'};
                  color:${isDark ? '#fff' : '#000'};
                  border:none;padding:0.5em 1.2em;border-radius:8px;cursor:pointer;">
           キャンセル
@@ -319,8 +319,8 @@
     return { contentEl, statusEl, wrapper };
   }
 
-  // ===== 概要レンダリング =====
-  function renderSummaryFromJson(jsonData, contentEl, timeEl, cacheKey) {
+  // ===== 概要レンダリング（上位3サイト要約＋全体まとめ） =====
+  function renderSummaryFromJson(jsonData, contentEl, timeEl, cacheKey, urlList) {
     if (!jsonData || typeof jsonData !== 'object') {
       contentEl.textContent = '概要を取得できませんでした。';
       return;
@@ -328,31 +328,67 @@
 
     let html = '';
 
-    if (jsonData.intro) {
-      html += `<section><p>${formatResponse(jsonData.intro)}</p></section>`;
-    }
+    // 新フォーマット: sites + overall
+    if (Array.isArray(jsonData.sites) && jsonData.sites.length > 0) {
+      html += '<section><h4>上位サイトの要約</h4><ol>';
 
-    if (Array.isArray(jsonData.sections)) {
-      jsonData.sections.forEach(sec => {
-        if (sec.title && Array.isArray(sec.content)) {
-          html += `<section><h4>${sec.title}</h4><ul>`;
-          sec.content.forEach(item => {
-            html += `<li>${formatResponse(item)}</li>`;
-          });
-          html += '</ul></section>';
+      jsonData.sites.slice(0, 3).forEach(site => {
+        const idx = typeof site.index === 'number' ? site.index : null;
+        let url = site.url || null;
+        if (!url && idx && Array.isArray(urlList) && urlList[idx - 1]) {
+          url = urlList[idx - 1];
         }
+
+        let linkHtml = '';
+        if (url) {
+          try {
+            const u = new URL(url);
+            const domain = u.hostname.replace(/^www\./, '');
+            linkHtml = ` <a href="${url}" target="_blank">${domain}</a>`;
+          } catch {
+            linkHtml = ` <a href="${url}" target="_blank">${url}</a>`;
+          }
+        }
+
+        const summary = formatResponse(site.summary || '');
+        html += `<li>${summary}${linkHtml}</li>`;
       });
+
+      html += '</ol></section>';
     }
 
+    if (jsonData.overall) {
+      html += `<section><h4>全体のまとめ</h4><p>${formatResponse(jsonData.overall)}</p></section>`;
+    }
+
+    // 旧フォーマット互換（intro / sections / urls）が来た場合も一応処理
+    if (!html) {
+      if (jsonData.intro) {
+        html += `<section><p>${formatResponse(jsonData.intro)}</p></section>`;
+      }
+      if (Array.isArray(jsonData.sections)) {
+        jsonData.sections.forEach(sec => {
+          if (sec.title && Array.isArray(sec.content)) {
+            html += `<section><h4>${sec.title}</h4><ul>`;
+            sec.content.forEach(item => {
+              html += `<li>${formatResponse(item)}</li>`;
+            });
+            html += '</ul></section>';
+          }
+        });
+      }
+    }
+
+    // urls セクション（共通）
     if (Array.isArray(jsonData.urls) && jsonData.urls.length > 0) {
-      html += '<section><h4>出典</h4><ul>';
+      html += '<section><h4>参考リンク</h4><ul>';
       jsonData.urls.slice(0, 3).forEach(url => {
         try {
           const u = new URL(url);
           const domain = u.hostname.replace(/^www\./, '');
           html += `<li><a href="${url}" target="_blank">${domain}</a></li>`;
         } catch {
-          html += `<li>${url}</li>`;
+          html += `<li><a href="${url}" target="_blank">${url}</a></li>`;
         }
       });
       html += '</ul></section>';
@@ -374,31 +410,40 @@
     setSummaryCache(cache);
   }
 
-  // ===== Gemini 呼び出し：概要 =====
+  // ===== Gemini 呼び出し：概要（上位3サイト要約モード） =====
   async function callGeminiSummary(apiKey, query, snippets, urls, contentEl, timeEl, cacheKey) {
     const prompt = `
-検索クエリ: ${query}
-検索スニペット:
+あなたは日本語で要約を行うアシスタントです。
+
+【入力情報】
+- 検索クエリ: ${query}
+- 検索スニペット（1〜${Math.min(3, snippets.split('\n\n').length)}が上位サイト）:
 ${snippets}
 
-指示:
-1. 上記のスニペットを元に、このクエリに対する概要を作成してください。
-2. 情報が不足する場合は「情報が限られています」と明示し、必要であれば推測も行ってください（推測と分かる書き方にする）。
-3. 概要は600字以内。
+【タスク】
+1. スニペットのうち、1番・2番・3番を「上位3サイト」とみなしてください。
+2. それぞれのサイトについて、「そのページを見ると何が分かりそうか」を
+   1〜3文程度で日本語で要約してください（サイトの主な主張・テーマなど）。
+3. 最後に、「これら上位サイト全体から分かること」を、短い日本語の文章でまとめてください。
 4. 出力は必ず次のJSON形式にしてください。
 
 {
-  "intro": "概要の導入文",
-  "sections": [
-    {
-      "title": "セクションタイトル",
-      "content": ["内容1", "内容2"]
-    }
+  "sites": [
+    { "index": 1, "summary": "サイト1の要約（日本語）" },
+    { "index": 2, "summary": "サイト2の要約（日本語）" },
+    { "index": 3, "summary": "サイト3の要約（日本語）" }
   ],
+  "overall": "上位サイト全体から分かることのまとめ（日本語）",
   "urls": ["URL1", "URL2", "URL3"]
 }
 
-urlsには、参考になりそうなURLを3件まで入れてください。
+【補足ルール】
+- "sites" は 1〜3件で構いません（スニペットが少ない場合は存在する分だけ）。
+- "index" は必ず元の番号（1, 2, 3 のいずれか）を入れてください。
+- "summary" や "overall" は、読みやすい自然な日本語で、必要以上に長くしないでください。
+- "urls" には参考になりそうなURLを最大3件入れてください。
+  （渡された情報にURLが無い場合は空配列でも構いません）
+- マークダウン記法（# や * など）は使わないでください。
     `.trim();
 
     try {
@@ -425,16 +470,17 @@ urlsには、参考になりそうなURLを3件まで入れてください。
         parsed = null;
       }
 
+      // URL補完
       if (parsed && (!Array.isArray(parsed.urls) || parsed.urls.length === 0)) {
         parsed.urls = urls.slice(0, 3);
       }
 
-      if (!parsed || (!parsed.intro && !Array.isArray(parsed.sections) && !Array.isArray(parsed.urls))) {
+      if (!parsed || ( !Array.isArray(parsed.sites) && !parsed.overall && !parsed.intro )) {
         contentEl.textContent = raw || '概要を取得できませんでした。';
         return;
       }
 
-      renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey);
+      renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey, urls);
     } catch (e) {
       contentEl.textContent = '通信に失敗しました';
       log.error(e);
@@ -472,38 +518,21 @@ C: それ以外の一般的な質問
 - 言語
 - タブー
 - 代表的な料理
-のうち、**特に重要だと思うもの**を中心に、バランスよく説明してください。
+のうち、特に重要だと思うものを中心に、バランスよく説明してください。
 
 【フォーマットの目安（日本語）】
 可能であれば、次の見出しを使ってください。ただし、情報が薄い部分は短く、重要な部分は少し厚めにして構いません。
 
 【概要】
-その国・地域がどんな場所かを、ごく簡潔に1〜2文で。
-
 【ビザ】
-日本人の短期観光についての一般的な傾向を簡潔に。
-不明・複雑な場合は「詳しい条件は大使館などの最新情報を確認してください」と添えてください。
-
 【治安】
-全体的な治安の印象と、注意が必要なポイントを短く。
-
 【通貨】
-通貨名と通貨コード（例：インドネシア・ルピア（IDR））を1行程度で。
-
 【言語】
-主な公用語や、日常でよく使われる言語を1〜2行で。
-
 【タブー】
-観光客が避けるべき代表的なタブーやNG行為を、重要なものから数行で。
-
 【料理】
-代表的な郷土料理や有名な食べ物を2〜5個ほど、簡単な説明つきで。
 
-【柔軟性のルール】
-- 上記の見出しは「全部必須」ではありません。重要度が低いと感じる項目は1行だけでも構いません。
-- 逆に、その国を理解するうえで他に重要な点（例: 物価、ベストシーズン、チップ文化など）があれば、
-  必要に応じて【その他】という見出しを追加しても構いません。
-- 全体で日本語およそ500〜800文字を目安にしますが、多少前後しても問題ありません。
+必要に応じて【その他】を追加しても構いません。
+全体として、日本人旅行者が「ざっくり雰囲気と注意点がつかめる」ことを最優先してください。
 
 ====================
 [B に近いと感じた場合（レシピ）]
@@ -516,12 +545,8 @@ C: それ以外の一般的な質問
 2. 調理のメイン手順
 3. 仕上げや盛り付け
 
-のように、3〜7ステップ程度で、家庭で再現しやすいように書いてください。
-
-【その他の条件】
-- 前置きや長い前説は書かず、いきなり【材料】から始めてください。
-- マークダウン記法（# や * など）は使わないでください。
-- 文字数はきっちり守る必要はありませんが、読みやすい分量（だいたい300〜600文字程度）を意識してください。
+のように、家庭で再現しやすい形で書いてください。
+前置きや長い前説は書かず、いきなり【材料】から始めてください。
 
 ====================
 [C に近いと感じた場合（その他）]
@@ -533,9 +558,7 @@ C: それ以外の一般的な質問
 - マークダウン記法（# や * など）は使わないでください。
 - 箇条書きにする場合は、「・」から始めるシンプルなスタイルだけにしてください。
 
-====================
 【重要な注意】
-====================
 - 出力には、A/B/C のラベルや「これはAです」のような説明は絶対に書かないでください。
 - 固定の型にこだわりすぎず、「このユーザーが今知りたいこと」が伝わるように、多少フォーマットを崩しても構いません。
     `.trim();
