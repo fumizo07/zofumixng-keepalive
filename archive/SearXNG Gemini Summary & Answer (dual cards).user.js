@@ -292,3 +292,404 @@
 
     wrapper.innerHTML = `
       <div style="
+        border-radius:12px;
+        padding:0.75em 1em;
+        margin-bottom:0.5em;
+        border:1px solid ${isDark ? '#555' : '#ddd'};
+        background:${isDark ? '#111' : '#f9fafb'};
+        font-family:inherit;
+      ">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    margin-bottom:0.4em;">
+          <div style="font-weight:600;font-size:1em;">Gemini AI 回答</div>
+          <span class="gemini-answer-status"
+                style="font-size:0.8em;opacity:0.7;">問い合わせ中...</span>
+        </div>
+        <div class="gemini-answer-content"
+             style="line-height:1.6;white-space:pre-wrap;"></div>
+      </div>
+    `;
+    if (sidebar) {
+      sidebar.insertBefore(wrapper, sidebar.firstChild);
+    } else {
+      mainResults.parentNode.insertBefore(wrapper, mainResults);
+    }
+    const contentEl = wrapper.querySelector('.gemini-answer-content');
+    const statusEl = wrapper.querySelector('.gemini-answer-status');
+    return { contentEl, statusEl, wrapper };
+  }
+
+  // ===== 概要レンダリング（上位サイト要約＋全体まとめ） =====
+  function renderSummaryFromJson(jsonData, contentEl, timeEl, cacheKey, summaryUrls) {
+    if (!jsonData || typeof jsonData !== 'object') {
+      contentEl.textContent = '概要を取得できませんでした。';
+      return;
+    }
+
+    let html = '';
+
+    if (Array.isArray(jsonData.sites) && jsonData.sites.length > 0) {
+      html += '<section><h4>上位サイトの要約</h4><ol>';
+
+      jsonData.sites.slice(0, 5).forEach((site, idx) => {
+        const index = typeof site.index === 'number' ? site.index : idx + 1;
+        let url = site.url || null;
+        if (!url && Array.isArray(summaryUrls) && summaryUrls[index - 1]) {
+          url = summaryUrls[index - 1];
+        }
+
+        let linkHtml = '';
+        if (url) {
+          try {
+            const u = new URL(url);
+            const domain = u.hostname.replace(/^www\./, '');
+            linkHtml = ` <a href="${url}" target="_blank">${domain}</a>`;
+          } catch {
+            linkHtml = ` <a href="${url}" target="_blank">${url}</a>`;
+          }
+        }
+
+        const summary = formatResponse(site.summary || '');
+        html += `<li>${summary}${linkHtml}</li>`;
+      });
+
+      html += '</ol></section>';
+    }
+
+    if (jsonData.overall) {
+      html += `<section><h4>全体のまとめ</h4><p>${formatResponse(jsonData.overall)}</p></section>`;
+    }
+
+    if (Array.isArray(jsonData.urls) && jsonData.urls.length > 0) {
+      html += '<section><h4>参考リンク</h4><ul>';
+      jsonData.urls.slice(0, 5).forEach(url => {
+        try {
+          const u = new URL(url);
+          const domain = u.hostname.replace(/^www\./, '');
+          html += `<li><a href="${url}" target="_blank">${domain}</a></li>`;
+        } catch {
+          html += `<li><a href="${url}" target="_blank">${url}</a></li>`;
+        }
+      });
+      html += '</ul></section>';
+    }
+
+    if (!html) {
+      contentEl.textContent = '概要を取得できませんでした。';
+    } else {
+      contentEl.innerHTML = html;
+    }
+
+    const now = new Date();
+    const timeText = now.toLocaleString('ja-JP', { hour12: false });
+    timeEl.textContent = timeText;
+
+    const cache = getSummaryCache();
+    if (!cache.keys.includes(cacheKey)) cache.keys.push(cacheKey);
+    cache.data[cacheKey] = { html: contentEl.innerHTML, ts: Date.now(), time: timeText };
+    setSummaryCache(cache);
+  }
+
+  // ===== 概要用: weblio / wikipedia を除外するための判定 =====
+  function shouldExcludeFromSummary(url) {
+    if (!url) return false;
+    try {
+      const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+      if (host === 'weblio.jp' || host.endsWith('.weblio.jp')) return true;
+      if (host === 'wikipedia.org' || host.endsWith('.wikipedia.org')) return true;
+    } catch {
+      // URLパース失敗時は除外しない
+    }
+    return false;
+  }
+
+  // ===== Gemini 呼び出し：概要（上位5サイト要約モード） =====
+  async function callGeminiSummary(apiKey, query, summarySnippets, summaryUrls, contentEl, timeEl, cacheKey) {
+    const snippetCount = summarySnippets
+      ? summarySnippets.split('\n\n').filter(Boolean).length
+      : 0;
+
+    const prompt = `
+あなたは日本語で要約を行うアシスタントです。
+
+【入力情報】
+- 検索クエリ: ${query}
+- 検索スニペット（1〜${snippetCount} が上位サイト）:
+${summarySnippets}
+
+【タスク】
+1. スニペットのうち、1番〜${snippetCount}番を「上位サイト」とみなしてください（最大5件）。
+2. それぞれのサイトについて、「そのページを見ると何が分かりそうか」を
+   1〜3文程度で日本語で要約してください（サイトの主な主張・テーマなど）。
+3. 最後に、「これら上位サイト全体から分かること」を、短い日本語の文章でまとめてください。
+4. 出力は必ず次のJSON形式にしてください。
+
+{
+  "sites": [
+    { "index": 1, "summary": "サイト1の要約（日本語）" },
+    { "index": 2, "summary": "サイト2の要約（日本語）" },
+    { "index": 3, "summary": "サイト3の要約（日本語）" },
+    { "index": 4, "summary": "サイト4の要約（日本語）" },
+    { "index": 5, "summary": "サイト5の要約（日本語）" }
+  ],
+  "overall": "上位サイト全体から分かることのまとめ（日本語）",
+  "urls": ["URL1", "URL2", "URL3", "URL4", "URL5"]
+}
+
+【補足ルール】
+- "sites" は1〜5件で構いません（スニペットが少ない場合は存在する分だけで良い）。
+- "index" は必ず元の番号（1〜${snippetCount} のいずれか）を入れてください。
+- "summary" や "overall" は、読みやすい自然な日本語で、必要以上に長くしないでください。
+- "urls" には参考になりそうなURLを最大5件入れてください。
+- マークダウン記法（# や * など）は使わないでください。
+    `.trim();
+
+    try {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        }
+      );
+      if (!resp.ok) {
+        contentEl.textContent = `APIエラー: ${resp.status}`;
+        return;
+      }
+      const data = await resp.json();
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      let parsed = null;
+      try {
+        const match = raw.match(/\{[\s\S]*\}/);
+        parsed = match ? JSON.parse(match[0]) : null;
+      } catch (e) {
+        parsed = null;
+      }
+
+      // URL補完
+      if (parsed && (!Array.isArray(parsed.urls) || parsed.urls.length === 0)) {
+        parsed.urls = summaryUrls.slice(0, 5);
+      }
+
+      if (!parsed || (!Array.isArray(parsed.sites) && !parsed.overall && !parsed.intro)) {
+        contentEl.textContent = raw || '概要を取得できませんでした。';
+        return;
+      }
+
+      renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey, summaryUrls);
+    } catch (e) {
+      contentEl.textContent = '通信に失敗しました';
+      log.error(e);
+    }
+  }
+
+  // ===== Gemini 呼び出し：回答（柔らかめロジック） =====
+  async function callGeminiAnswer(apiKey, query, snippets, answerEl, statusEl) {
+    const prompt = `
+あなたは日本語で回答するアシスタントです。
+ユーザーのクエリ: ${query}
+
+以下は検索スニペットです（必要な場合だけ参考にしてください。不要なら無視して構いません）:
+${snippets}
+
+【ステップ1：クエリの種類を心の中で判断】
+次のどれに近いかを「あなたの内部で」判断してください（出力には書かないでください）。
+
+A: 国・地域・旅行に関する質問
+   （国名・都市名・観光・治安・ビザ・渡航・海外旅行など、場所そのものを知りたい感じ）
+B: レシピ・作り方に関する質問
+   （料理名＋「レシピ」「作り方」「〜の作り方」など）
+C: それ以外の一般的な質問
+
+※ A/B/C のラベル名は出力に含めてはいけません。
+
+====================
+[A に近いと感じた場合（旅行・国/地域）]
+====================
+その国・地域について知りたい日本人に対して、
+- どんな場所か
+- ビザ
+- 治安
+- 通貨
+- 言語
+- タブー
+- 代表的な料理
+のうち、特に重要だと思うものを中心に、バランスよく説明してください。
+
+【フォーマットの目安（日本語）】
+可能であれば、次の見出しを使ってください。ただし、情報が薄い部分は短く、重要な部分は少し厚めにして構いません。
+
+【概要】
+【ビザ】
+【治安】
+【通貨】
+【言語】
+【タブー】
+【料理】
+
+必要に応じて【その他】を追加しても構いません。
+全体として、日本人旅行者が「ざっくり雰囲気と注意点がつかめる」ことを最優先してください。
+
+====================
+[B に近いと感じた場合（レシピ）]
+====================
+【材料】
+・2人分を想定し、必要な材料だけを3〜10個程度に絞って箇条書きで。
+
+【手順】
+1. 下ごしらえ
+2. 調理のメイン手順
+3. 仕上げや盛り付け
+
+のように、家庭で再現しやすい形で書いてください。
+前置きや長い前説は書かず、いきなり【材料】から始めてください。
+
+====================
+[C に近いと感じた場合（その他）]
+====================
+【出力の方針】
+- 前置きは書かず、いきなり本題から説明してください。
+- 内容はできるだけ簡潔に、しかし要点は落とさないようにします。
+- 3〜5文程度、全体で日本語300〜500文字ぐらいを目安にしてください。
+- マークダウン記法（# や * など）は使わないでください。
+- 箇条書きにする場合は、「・」から始めるシンプルなスタイルだけにしてください。
+
+【重要な注意】
+- 出力には、A/B/C のラベルや「これはAです」のような説明は絶対に書かないでください。
+- 固定の型にこだわりすぎず、「このユーザーが今知りたいこと」が伝わるように、多少フォーマットを崩しても構いません。
+    `.trim();
+
+    try {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        }
+      );
+      if (!resp.ok) {
+        statusEl.textContent = `APIエラー: ${resp.status}`;
+        return;
+      }
+      const data = await resp.json();
+      const raw =
+        data.candidates?.[0]?.content?.parts?.[0]?.text ||
+        '回答を取得できませんでした。';
+      const pretty = prettifyAnswer(raw);
+      answerEl.textContent = pretty;
+      statusEl.textContent = '完了';
+    } catch (e) {
+      statusEl.textContent = '通信エラー';
+      log.error(e);
+    }
+  }
+
+  // ===== メイン処理 =====
+  const form = document.querySelector('#search_form, form[action="/search"]');
+  const sidebar = document.querySelector('#sidebar');
+  const mainResults =
+    document.getElementById('main_results') ||
+    document.querySelector('#results, .results');
+
+  if (!form || !mainResults) {
+    log.info('SearXNG検索結果ページではないか、DOM構造が非対応です');
+    return;
+  }
+
+  const qInput = document.querySelector('input[name="q"]');
+  const query = qInput?.value?.trim();
+  if (!query) {
+    log.info('検索クエリが空です');
+    return;
+  }
+
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    log.warn('APIキー未設定のため処理を終了します');
+    return;
+  }
+
+  const {
+    contentEl: answerEl,
+    statusEl: answerStatusEl,
+    wrapper: answerWrapper
+  } = createAnswerBox(mainResults, sidebar);
+
+  let summaryContentEl = null;
+  let summaryTimeEl = null;
+  if (sidebar) {
+    const s = createSummaryBox(sidebar, answerWrapper);
+    summaryContentEl = s.contentEl;
+    summaryTimeEl = s.timeEl;
+  }
+
+  const cacheKey = normalizeQuery(query);
+  const cache = getSummaryCache();
+  if (summaryContentEl && cache.data[cacheKey]) {
+    const cached = cache.data[cacheKey];
+    summaryContentEl.innerHTML = cached.html;
+    summaryTimeEl.textContent = cached.time;
+    log.info('概要: キャッシュを使用:', query);
+  }
+
+  const results = await fetchSearchResults(form, mainResults, CONFIG.MAX_RESULTS);
+  const excludePatterns = [/google キャッシュ$/i];
+
+  const snippetsArr = [];
+  const urlList = [];
+  let totalChars = 0;
+
+  for (const r of results) {
+    const snippetEl = r.querySelector('.result__snippet') || r;
+    let text = snippetEl.innerText.trim();
+    excludePatterns.forEach(p => {
+      text = text.replace(p, '').trim();
+    });
+    if (!text) continue;
+    if (totalChars + text.length > CONFIG.SNIPPET_CHAR_LIMIT) break;
+    snippetsArr.push(text);
+    totalChars += text.length;
+
+    const link = r.querySelector('a');
+    if (link && link.href) {
+      urlList.push(link.href);
+    }
+  }
+
+  // 回答用: 全スニペット
+  const snippets = snippetsArr.map((t, i) => `${i + 1}. ${t}`).join('\n\n');
+
+  // 概要用: weblio / wikipedia を除いた上位5件だけ
+  const summarySnippetsArr = [];
+  const summaryUrls = [];
+  for (let i = 0; i < snippetsArr.length && summarySnippetsArr.length < 5; i++) {
+    const url = urlList[i] || '';
+    if (shouldExcludeFromSummary(url)) continue;
+    summarySnippetsArr.push(snippetsArr[i]);
+    summaryUrls.push(url);
+  }
+  const summarySnippets = summarySnippetsArr
+    .map((t, i) => `${i + 1}. ${t}`)
+    .join('\n\n');
+
+  if (summaryContentEl && !cache.data[cacheKey]) {
+    if (summarySnippetsArr.length > 0) {
+      callGeminiSummary(
+        apiKey,
+        query,
+        summarySnippets,
+        summaryUrls,
+        summaryContentEl,
+        summaryTimeEl,
+        cacheKey
+      );
+    } else {
+      summaryContentEl.textContent = '概要生成に利用できるサイトが見つかりませんでした。';
+    }
+  }
+
+  callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
+})();
