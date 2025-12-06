@@ -25,3 +25,23 @@ jobs:
             --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 40 \
             -A "keepalive-bot/1.0" \
             "https://zofumixng.onrender.com/opensearch.xml" >/dev/null
+
+      - name: Curl Personal Search (root)
+        run: |
+          set -euo pipefail
+          curl -fsS -4 --location \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 40 \
+            -A "keepalive-bot/1.0" \
+            "https://zofusai.onrender.com/" >/dev/null
+
+      - name: Curl Personal Search (thread_search)
+        run: |
+          set -euo pipefail
+          curl -fsS -4 --location \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 40 \
+            -A "keepalive-bot/1.0" \
+            "https://zofusai.onrender.com/thread_search" >/dev/null
