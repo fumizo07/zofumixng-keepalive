@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
 // @namespace    https://example.com/searxng-gemini-combined
-// @version      0.9.7
+// @version      0.9.8
 // @description  SearXNG検索結果ページに「Gemini AIの回答」と「Geminiによる概要（上位サイト要約＋全体まとめ）」を表示（長文は折りたたみ対応、サイドバーがあれば常にサイドバー上部に配置）
 // @author       you
 // @match        *://zofumixng.onrender.com/*
@@ -23,7 +23,7 @@
     SUMMARY_CACHE_LIMIT: 30,
     SUMMARY_CACHE_EXPIRE: 7 * 24 * 60 * 60 * 1000, // 7日
 
-    // 429/503などの一時エラー対策（指数バックオフ＋再試行）
+    // 429/5xx の一時エラー対策（指数バックオフ＋再試行）
     RETRY_MAX: 5,
     RETRY_BASE_DELAY_MS: 700,
     RETRY_MAX_DELAY_MS: 12000,
@@ -31,14 +31,10 @@
     RETRY_ON_STATUS: [429, 500, 502, 503, 504],
 
     // 概要と回答を同時に叩くと429になりやすいので、概要だけ少し遅らせる
-    SUMMARY_START_DELAY_MS: 400,
-
-    // DOM待ち（ポーリング）
-    BOOTSTRAP_WAIT_MS: 20000,
-    BOOTSTRAP_INTERVAL_MS: 250
+    SUMMARY_START_DELAY_MS: 400
   };
 
-  const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   // 32文字のランダム英数字推奨（共通鍵）
   const FIXED_KEY = '1234567890abcdef1234567890abcdef';
@@ -49,40 +45,6 @@
     warn:  (...a) => console.warn('[Gemini][WARN]',  ...a),
     error: (...a) => console.error('[Gemini][ERROR]', ...a)
   };
-
-  // ===== 画面右下バッジ（「実行されてるか」可視化）=====
-  let lastFatal = '';
-  function showBadge(text) {
-    let b = document.getElementById('gemini-userscript-badge');
-    if (!b) {
-      b = document.createElement('div');
-      b.id = 'gemini-userscript-badge';
-      b.style.position = 'fixed';
-      b.style.right = '10px';
-      b.style.bottom = '10px';
-      b.style.zIndex = '2147483647';
-      b.style.padding = '6px 10px';
-      b.style.borderRadius = '999px';
-      b.style.fontSize = '12px';
-      b.style.fontFamily = 'sans-serif';
-      b.style.border = `1px solid ${isDark ? '#666' : '#ccc'}`;
-      b.style.background = isDark ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.9)';
-      b.style.color = isDark ? '#fff' : '#000';
-      b.style.backdropFilter = 'blur(6px)';
-      b.style.cursor = 'pointer';
-      b.title = 'タップで状態を表示';
-      b.addEventListener('click', () => {
-        const msg = lastFatal
-          ? `Gemini UserScript 状態:\n\n${b.textContent}\n\n最後の致命エラー:\n${lastFatal}`
-          : `Gemini UserScript 状態:\n\n${b.textContent}\n\n致命エラーは記録されていません。`;
-        alert(msg);
-      });
-      document.documentElement.appendChild(b);
-    }
-    b.textContent = text;
-  }
-
-  showBadge('Gemini: 起動');
 
   function normalizeQuery(q) {
     return String(q || '')
@@ -95,7 +57,7 @@
   const formatResponse = text =>
     String(text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-  // ===== 429/503 対策：指数バックオフ付き再試行 =====
+  // ===== 429/5xx 対策：指数バックオフ付き再試行 =====
   function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
   }
@@ -113,10 +75,10 @@
       if (ct.includes('application/json')) {
         const j = await resp.json();
         const msg = j?.error?.message || j?.message || JSON.stringify(j);
-        return String(msg).slice(0, 240);
+        return String(msg).slice(0, 300);
       }
       const t = await resp.text();
-      return String(t).slice(0, 240);
+      return String(t).slice(0, 300);
     } catch {
       return '';
     }
@@ -170,7 +132,62 @@
     }
   }
 
-  // ===== AES-GCM で API キー暗号化保存（9.0.1方式）=====
+  // ===== 回答の軽い整形 =====
+  function prettifyAnswer(text) {
+    if (!text) return '';
+    let t = String(text).trim();
+
+    const newlineCount = (t.match(/\n/g) || []).length;
+    if (newlineCount === 0) {
+      t = t.replace(/(。|！|？)/g, '$1\n');
+    }
+    t = t.replace(/\n{3,}/g, '\n\n');
+    return t.trim();
+  }
+
+  // ===== 長文折りたたみ =====
+  function setupCollapsible(el, maxHeightPx = 260) {
+    if (!el || !el.parentNode) return;
+
+    requestAnimationFrame(() => {
+      const fullHeight = el.scrollHeight;
+      if (!fullHeight || fullHeight <= maxHeightPx + 10) return;
+
+      el.style.maxHeight = maxHeightPx + 'px';
+      el.style.overflow = 'hidden';
+      el.style.position = el.style.position || 'relative';
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.textContent = 'もっと見る';
+      toggle.style.border = 'none';
+      toggle.style.background = 'none';
+      toggle.style.padding = '0';
+      toggle.style.marginTop = '0.25em';
+      toggle.style.cursor = 'pointer';
+      toggle.style.fontSize = '0.85em';
+      toggle.style.opacity = '0.8';
+      toggle.style.float = 'right';
+
+      let expanded = false;
+      toggle.addEventListener('click', () => {
+        expanded = !expanded;
+        if (expanded) {
+          el.style.maxHeight = 'none';
+          el.style.overflow = 'visible';
+          toggle.textContent = '閉じる';
+        } else {
+          el.style.maxHeight = maxHeightPx + 'px';
+          el.style.overflow = 'hidden';
+          toggle.textContent = 'もっと見る';
+        }
+      });
+
+      el.parentNode.appendChild(toggle);
+    });
+  }
+
+  // ===== AES-GCM で API キー暗号化保存 =====
   async function encrypt(text) {
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
@@ -195,6 +212,8 @@
 
   async function decrypt(cipher) {
     const [ivB64, ctB64] = String(cipher || '').split(':');
+    if (!ivB64 || !ctB64) throw new Error('Cipher format invalid');
+
     const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
     const ct = Uint8Array.from(atob(ctB64), c => c.charCodeAt(0));
     const enc = new TextEncoder();
@@ -213,7 +232,28 @@
     return new TextDecoder().decode(decrypted);
   }
 
-  // ===== APIキー入力 UI（9.0.1方式）=====
+  // ===== 概要キャッシュ =====
+  function getSummaryCache() {
+    try {
+      const c = JSON.parse(sessionStorage.getItem(CONFIG.SUMMARY_CACHE_KEY));
+      return c && typeof c === 'object' ? c : { keys: [], data: {} };
+    } catch {
+      return { keys: [], data: {} };
+    }
+  }
+
+  function setSummaryCache(cache) {
+    const now = Date.now();
+    cache.keys = cache.keys.filter(
+      k => cache.data[k]?.ts && now - cache.data[k].ts <= CONFIG.SUMMARY_CACHE_EXPIRE
+    );
+    while (cache.keys.length > CONFIG.SUMMARY_CACHE_LIMIT) {
+      delete cache.data[cache.keys.shift()];
+    }
+    sessionStorage.setItem(CONFIG.SUMMARY_CACHE_KEY, JSON.stringify(cache));
+  }
+
+  // ===== APIキー入力 UI =====
   async function getApiKey(force = false) {
     if (force) {
       try { localStorage.removeItem('GEMINI_API_KEY'); } catch {}
@@ -227,7 +267,7 @@
       try {
         key = await decrypt(encrypted);
       } catch (e) {
-        log.error('APIキー復号失敗', e);
+        log.warn('APIキー復号失敗:', e);
       }
     }
     if (key) return key;
@@ -297,13 +337,13 @@
           btn.disabled = true;
           btn.textContent = '保存中…';
           const enc = await encrypt(val);
-          localStorage.setItem('GEMINI_API_KEY', enc);
+          try { localStorage.setItem('GEMINI_API_KEY', enc); } catch {}
           overlay.remove();
           resolve(val);
           setTimeout(() => location.reload(), 500);
         } catch (e) {
           alert('暗号化に失敗しました');
-          console.error(e);
+          log.error(e);
           const btn = overlay.querySelector('#gemini-save-btn');
           btn.disabled = false;
           btn.textContent = '保存';
@@ -316,78 +356,131 @@
     });
   }
 
-  // ===== 回答の軽い整形 =====
-  function prettifyAnswer(text) {
-    if (!text) return '';
-    let t = String(text).trim();
-    const newlineCount = (t.match(/\n/g) || []).length;
-    if (newlineCount === 0) t = t.replace(/(。|！|？)/g, '$1\n');
-    t = t.replace(/\n{3,}/g, '\n\n');
-    return t.trim();
+  // ===== 403/401など「キー原因っぽい」判定（クォータ超過は除外） =====
+  function isLikelyApiKeyError(status, message) {
+    const m = String(message || '').toLowerCase();
+
+    // クォータ超過/リソース枯渇は「キー再入力」では直らないので除外
+    if (m.includes('quota') || m.includes('exceed') || m.includes('resource_exhausted')) return false;
+
+    if (status === 401) return true;
+    if (status === 403) {
+      // 403は色々あるので、キー系/権限系っぽい文言がある時だけ
+      if (m.includes('api key') || m.includes('apikey') || m.includes('api-key')) return true;
+      if (m.includes('permission') || m.includes('unauthorized') || m.includes('not authorized')) return true;
+      if (m.includes('invalid') && (m.includes('key') || m.includes('api'))) return true;
+      return false;
+    }
+    if (status === 400) {
+      if (m.includes('api key') || m.includes('apikey') || m.includes('api-key')) return true;
+      return false;
+    }
+    return false;
   }
 
-  // ===== 長文折りたたみ =====
-  function setupCollapsible(el, maxHeightPx = 260) {
-    if (!el || !el.parentNode) return;
-    requestAnimationFrame(() => {
-      const fullHeight = el.scrollHeight;
-      if (!fullHeight || fullHeight <= maxHeightPx + 10) return;
+  // ===== 共通化：Gemini API 呼び出し =====
+  function geminiEndpoint(apiKey) {
+    return `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`;
+  }
 
-      el.style.maxHeight = maxHeightPx + 'px';
-      el.style.overflow = 'hidden';
+  function buildGeminiRequestOptions(prompt) {
+    return {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    };
+  }
 
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.textContent = 'もっと見る';
-      toggle.style.border = 'none';
-      toggle.style.background = 'none';
-      toggle.style.padding = '0';
-      toggle.style.marginTop = '0.25em';
-      toggle.style.cursor = 'pointer';
-      toggle.style.fontSize = '0.85em';
-      toggle.style.opacity = '0.8';
-      toggle.style.float = 'right';
+  function extractGeminiText(data) {
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  }
 
-      let expanded = false;
-      toggle.addEventListener('click', () => {
-        expanded = !expanded;
-        if (expanded) {
-          el.style.maxHeight = 'none';
-          el.style.overflow = 'visible';
-          toggle.textContent = '閉じる';
-        } else {
-          el.style.maxHeight = maxHeightPx + 'px';
-          el.style.overflow = 'hidden';
-          toggle.textContent = 'もっと見る';
+  async function callGeminiText(apiKey, prompt, onStatusText = null) {
+    const url = geminiEndpoint(apiKey);
+    const resp = await fetchWithRetry(url, buildGeminiRequestOptions(prompt), onStatusText);
+
+    if (!resp.ok) {
+      const msg = await safeReadErrorText(resp);
+
+      // キーが原因っぽいなら自動で再入力モーダルを出す（ループはしない）
+      if (isLikelyApiKeyError(resp.status, msg)) {
+        if (typeof onStatusText === 'function') onStatusText('APIキーが無効の可能性があります。再入力してください。');
+        await getApiKey(true);
+      }
+
+      return { ok: false, status: resp.status, message: msg };
+    }
+
+    const data = await resp.json();
+    const raw = extractGeminiText(data);
+    return { ok: true, status: 200, raw };
+  }
+
+  // ===== 検索結果取得（ページ跨ぎ対応） =====
+  async function fetchSearchResults(form, mainResults, maxResults) {
+    let results = Array.from(mainResults.querySelectorAll('.result'));
+    let currentResults = results.length;
+    let pageNo = parseInt(new FormData(form).get('pageno') || 1, 10);
+
+    async function fetchNextPage() {
+      if (currentResults >= maxResults) return [];
+      pageNo++;
+      const formData = new FormData(form);
+      formData.set('pageno', pageNo);
+      try {
+        const resp = await fetch(form.action, { method: 'POST', body: formData });
+        const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
+        const newResults = Array.from(
+          doc.querySelectorAll('#main_results .result')
+        ).slice(0, maxResults - currentResults);
+        currentResults += newResults.length;
+        if (currentResults < maxResults && newResults.length > 0) {
+          const nextResults = await fetchNextPage();
+          return newResults.concat(nextResults);
         }
-      });
-
-      el.parentNode.appendChild(toggle);
-    });
-  }
-
-  // ===== 概要キャッシュ =====
-  function getSummaryCache() {
-    try {
-      const c = JSON.parse(sessionStorage.getItem(CONFIG.SUMMARY_CACHE_KEY));
-      return c && typeof c === 'object' ? c : { keys: [], data: {} };
-    } catch {
-      return { keys: [], data: {} };
+        return newResults;
+      } catch (e) {
+        log.error('検索結果取得エラー:', e);
+        return [];
+      }
     }
+
+    const additionalResults = await fetchNextPage();
+    results.push(...additionalResults);
+    return results.slice(0, maxResults);
   }
 
-  function setSummaryCache(cache) {
-    const now = Date.now();
-    cache.keys = cache.keys.filter(
-      k => cache.data[k]?.ts && now - cache.data[k].ts <= CONFIG.SUMMARY_CACHE_EXPIRE
-    );
-    while (cache.keys.length > CONFIG.SUMMARY_CACHE_LIMIT) {
-      delete cache.data[cache.keys.shift()];
+  // ===== サマリ UI 作成 =====
+  function createSummaryBox(sidebar, afterElement = null) {
+    const aiBox = document.createElement('div');
+    aiBox.innerHTML = `
+      <div style="margin-top:1em;margin-bottom:0.5em;padding:0.5em;
+                  background:transparent;color:inherit;font-family:inherit;">
+        <div style="display:flex;justify-content:space-between;
+                    align-items:center;margin-bottom:0.5em;">
+          <div style="font-weight:600;font-size:1em;">Geminiによる概要</div>
+          <span class="gemini-summary-time"
+                style="font-size:0.8em;opacity:0.7;"></span>
+        </div>
+        <div class="gemini-summary-content"
+             style="margin-top:1.0em;margin-bottom:1.0em;line-height:1.5;">
+          取得中...
+        </div>
+      </div>
+    `;
+    if (afterElement && afterElement.parentNode === sidebar) {
+      sidebar.insertBefore(aiBox, afterElement.nextSibling);
+    } else {
+      sidebar.insertBefore(aiBox, sidebar.firstChild);
     }
-    sessionStorage.setItem(CONFIG.SUMMARY_CACHE_KEY, JSON.stringify(cache));
+    const contentEl = aiBox.querySelector('.gemini-summary-content');
+    const timeEl = aiBox.querySelector('.gemini-summary-time');
+    return { contentEl, timeEl };
   }
 
-  // ===== UI作成（9.0.1方式：必ず結果領域に入れる）=====
+  // ===== 回答 UI 作成（0.9.1の見た目を維持しつつ🔑ボタン追加） =====
   function createAnswerBox(mainResults, sidebar) {
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
@@ -401,7 +494,8 @@
         background:${isDark ? '#111' : '#f9fafb'};
         font-family:inherit;
       ">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4em;">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    margin-bottom:0.4em;">
           <div style="font-weight:600;font-size:1em;display:flex;align-items:center;gap:0.6em;">
             <span>Gemini AI 回答</span>
             <button class="gemini-reset-key" type="button"
@@ -409,17 +503,22 @@
               🔑キー再設定
             </button>
           </div>
-          <span class="gemini-answer-status" style="font-size:0.8em;opacity:0.7;">待機中...</span>
+          <span class="gemini-answer-status"
+                style="font-size:0.8em;opacity:0.7;">問い合わせ中...</span>
         </div>
-        <div class="gemini-answer-content" style="line-height:1.6;white-space:pre-wrap;"></div>
+        <div class="gemini-answer-content"
+             style="line-height:1.6;white-space:pre-wrap;"></div>
       </div>
     `;
-
-    if (sidebar) sidebar.insertBefore(wrapper, sidebar.firstChild);
-    else mainResults.parentNode.insertBefore(wrapper, mainResults);
+    if (sidebar) {
+      sidebar.insertBefore(wrapper, sidebar.firstChild);
+    } else {
+      mainResults.parentNode.insertBefore(wrapper, mainResults);
+    }
 
     const contentEl = wrapper.querySelector('.gemini-answer-content');
     const statusEl = wrapper.querySelector('.gemini-answer-status');
+
     const resetBtn = wrapper.querySelector('.gemini-reset-key');
     resetBtn.addEventListener('click', async () => {
       statusEl.textContent = 'キー再設定...';
@@ -427,28 +526,6 @@
     });
 
     return { contentEl, statusEl, wrapper };
-  }
-
-  function createSummaryBox(sidebar, afterElement = null) {
-    const aiBox = document.createElement('div');
-    aiBox.innerHTML = `
-      <div style="margin-top:1em;margin-bottom:0.5em;padding:0.5em;background:transparent;color:inherit;font-family:inherit;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5em;">
-          <div style="font-weight:600;font-size:1em;">Geminiによる概要</div>
-          <span class="gemini-summary-time" style="font-size:0.8em;opacity:0.7;"></span>
-        </div>
-        <div class="gemini-summary-content" style="margin-top:1.0em;margin-bottom:1.0em;line-height:1.5;">
-          取得中...
-        </div>
-      </div>
-    `;
-    if (afterElement && afterElement.parentNode === sidebar) sidebar.insertBefore(aiBox, afterElement.nextSibling);
-    else sidebar.insertBefore(aiBox, sidebar.firstChild);
-
-    return {
-      contentEl: aiBox.querySelector('.gemini-summary-content'),
-      timeEl: aiBox.querySelector('.gemini-summary-time')
-    };
   }
 
   // ===== 概要レンダリング =====
@@ -462,10 +539,13 @@
 
     if (Array.isArray(jsonData.sites) && jsonData.sites.length > 0) {
       html += '<section><h4>上位サイトの要約</h4><ol>';
+
       jsonData.sites.slice(0, 5).forEach((site, idx) => {
         const index = typeof site.index === 'number' ? site.index : idx + 1;
         let url = site.url || null;
-        if (!url && Array.isArray(summaryUrls) && summaryUrls[index - 1]) url = summaryUrls[index - 1];
+        if (!url && Array.isArray(summaryUrls) && summaryUrls[index - 1]) {
+          url = summaryUrls[index - 1];
+        }
 
         let linkHtml = '';
         if (url) {
@@ -481,6 +561,7 @@
         const summary = formatResponse(site.summary || '');
         html += `<li>${summary}${linkHtml}</li>`;
       });
+
       html += '</ol></section>';
     }
 
@@ -502,8 +583,9 @@
       html += '</ul></section>';
     }
 
-    if (!html) contentEl.textContent = '概要を取得できませんでした。';
-    else {
+    if (!html) {
+      contentEl.textContent = '概要を取得できませんでした。';
+    } else {
       contentEl.innerHTML = html;
       setupCollapsible(contentEl, 260);
     }
@@ -518,6 +600,7 @@
     setSummaryCache(cache);
   }
 
+  // ===== 概要用: weblio / wikipedia を除外 =====
   function shouldExcludeFromSummary(url) {
     if (!url) return false;
     try {
@@ -528,72 +611,71 @@
     return false;
   }
 
-  // ===== 検索結果取得（ページ跨ぎ対応） =====
-  async function fetchSearchResults(form, mainResults, maxResults) {
-    let results = Array.from(mainResults.querySelectorAll('.result'));
-    let currentResults = results.length;
-    let pageNo = 1;
-    try { pageNo = parseInt(new FormData(form).get('pageno') || 1, 10); } catch {}
+  // ===== Gemini：概要 =====
+  async function callGeminiSummary(apiKey, query, summarySnippets, summaryUrls, contentEl, timeEl, cacheKey) {
+    const snippetCount = summarySnippets
+      ? summarySnippets.split('\n\n').filter(Boolean).length
+      : 0;
 
-    async function fetchNextPage() {
-      if (currentResults >= maxResults) return [];
-      pageNo++;
-      const formData = new FormData(form);
-      formData.set('pageno', pageNo);
-      try {
-        const resp = await fetch(form.action, { method: 'POST', body: formData });
-        const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
-        const newResults = Array.from(doc.querySelectorAll('#main_results .result'))
-          .slice(0, maxResults - currentResults);
-        currentResults += newResults.length;
-        if (currentResults < maxResults && newResults.length > 0) {
-          const nextResults = await fetchNextPage();
-          return newResults.concat(nextResults);
-        }
-        return newResults;
-      } catch (e) {
-        log.error('検索結果取得エラー:', e);
-        return [];
+    const prompt = `
+あなたは日本語で要約を行うアシスタントです。
+
+【入力情報】
+- 検索クエリ: ${query}
+- 検索スニペット（1〜${snippetCount} が上位サイト）:
+${summarySnippets}
+
+【タスク】
+1. スニペットのうち、1番〜${snippetCount}番を「上位サイト」とみなしてください（最大5件）。
+2. それぞれのサイトについて、「そのページを見ると何が分かりそうか」を1〜3文程度で日本語で要約してください。
+3. 最後に、「これら上位サイト全体から分かること」を短い日本語の文章でまとめてください。
+4. 出力は必ず次のJSON形式にしてください。
+
+{
+  "sites": [
+    { "index": 1, "summary": "サイト1の要約（日本語）" }
+  ],
+  "overall": "上位サイト全体から分かることのまとめ（日本語）",
+  "urls": ["URL1"]
+}
+
+【補足ルール】
+- マークダウン記法（# や * など）は使わないでください。
+    `.trim();
+
+    try {
+      const r = await callGeminiText(apiKey, prompt, (t) => { contentEl.textContent = t; });
+      if (!r.ok) {
+        contentEl.textContent = `APIエラー: ${r.status}${r.message ? ` (${r.message})` : ''}`;
+        return;
       }
+
+      const raw = r.raw || '';
+      let parsed = null;
+      try {
+        const match = raw.match(/\{[\s\S]*\}/);
+        parsed = match ? JSON.parse(match[0]) : null;
+      } catch {
+        parsed = null;
+      }
+
+      if (parsed && (!Array.isArray(parsed.urls) || parsed.urls.length === 0)) {
+        parsed.urls = summaryUrls.slice(0, 5);
+      }
+
+      if (!parsed || (!Array.isArray(parsed.sites) && !parsed.overall && !parsed.intro)) {
+        contentEl.textContent = raw || '概要を取得できませんでした。';
+        return;
+      }
+
+      renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey, summaryUrls);
+    } catch (e) {
+      contentEl.textContent = '通信に失敗しました';
+      log.error(e);
     }
-
-    const additionalResults = await fetchNextPage();
-    results.push(...additionalResults);
-    return results.slice(0, maxResults);
   }
 
-  // ===== Gemini API =====
-  function geminiEndpoint(apiKey) {
-    return `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`;
-  }
-
-  function buildGeminiRequestOptions(prompt) {
-    return {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-    };
-  }
-
-  function extractGeminiText(data) {
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  }
-
-  async function callGeminiText(apiKey, prompt, onStatusText = null) {
-    const resp = await fetchWithRetry(geminiEndpoint(apiKey), buildGeminiRequestOptions(prompt), onStatusText);
-
-    if (!resp.ok) {
-      const msg = await safeReadErrorText(resp);
-
-      // 403でも「キーが悪い」ではなく「割当超過」もあるので、メッセージを表示するだけにする
-      return { ok: false, status: resp.status, message: msg };
-    }
-
-    const data = await resp.json();
-    const raw = extractGeminiText(data);
-    return { ok: true, status: 200, raw };
-  }
-
+  // ===== Gemini：回答 =====
   async function callGeminiAnswer(apiKey, query, snippets, answerEl, statusEl) {
     const prompt = `
 あなたは日本語で回答するアシスタントです。
@@ -608,106 +690,44 @@ ${snippets}
 - マークダウン記法（# や * など）は使わないでください。
     `.trim();
 
-    const r = await callGeminiText(apiKey, prompt, (t) => { statusEl.textContent = t; });
-    if (!r.ok) {
-      statusEl.textContent = `APIエラー: ${r.status}`;
-      answerEl.textContent = r.message ? r.message : '回答を取得できませんでした。';
-      return;
-    }
-
-    answerEl.textContent = prettifyAnswer(r.raw || '');
-    setupCollapsible(answerEl, 260);
-    statusEl.textContent = '完了';
-  }
-
-  async function callGeminiSummary(apiKey, query, summarySnippets, summaryUrls, contentEl, timeEl, cacheKey) {
-    const snippetCount = summarySnippets ? summarySnippets.split('\n\n').filter(Boolean).length : 0;
-
-    const prompt = `
-あなたは日本語で要約を行うアシスタントです。
-
-【入力情報】
-- 検索クエリ: ${query}
-- 検索スニペット（1〜${snippetCount} が上位サイト）:
-${summarySnippets}
-
-【タスク】
-1. スニペットのうち、1番〜${snippetCount}番を「上位サイト」とみなしてください（最大5件）。
-2. 各サイトについて「そのページを見ると何が分かりそうか」を1〜3文で要約してください。
-3. 最後に「全体のまとめ」を短く書いてください。
-4. 出力は必ず次のJSON形式にしてください。
-
-{
-  "sites": [
-    { "index": 1, "summary": "サイト1の要約（日本語）" }
-  ],
-  "overall": "上位サイト全体から分かることのまとめ（日本語）",
-  "urls": ["URL1"]
-}
-
-【補足ルール】
-- マークダウン記法は使わないでください。
-    `.trim();
-
-    const r = await callGeminiText(apiKey, prompt, (t) => { contentEl.textContent = t; });
-    if (!r.ok) {
-      contentEl.textContent = `APIエラー: ${r.status}${r.message ? ` (${r.message})` : ''}`;
-      return;
-    }
-
-    const raw = r.raw || '';
-    let parsed = null;
     try {
-      const match = raw.match(/\{[\s\S]*\}/);
-      parsed = match ? JSON.parse(match[0]) : null;
-    } catch {
-      parsed = null;
-    }
+      const r = await callGeminiText(apiKey, prompt, (t) => { statusEl.textContent = t; });
+      if (!r.ok) {
+        statusEl.textContent = `APIエラー: ${r.status}`;
+        answerEl.textContent = r.message ? r.message : '回答を取得できませんでした。';
+        return;
+      }
 
-    if (parsed && (!Array.isArray(parsed.urls) || parsed.urls.length === 0)) {
-      parsed.urls = summaryUrls.slice(0, 5);
+      const raw = r.raw || '回答を取得できませんでした。';
+      answerEl.textContent = prettifyAnswer(raw);
+      setupCollapsible(answerEl, 260);
+      statusEl.textContent = '完了';
+    } catch (e) {
+      statusEl.textContent = '通信エラー';
+      log.error(e);
     }
-
-    if (!parsed || (!Array.isArray(parsed.sites) && !parsed.overall && !parsed.intro)) {
-      contentEl.textContent = raw || '概要を取得できませんでした。';
-      return;
-    }
-
-    renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey, summaryUrls);
   }
 
-  // ===== DOM待ち（form/main_resultsが出るまで）=====
-  async function waitTargets() {
-    const start = Date.now();
-    while (Date.now() - start < CONFIG.BOOTSTRAP_WAIT_MS) {
-      const form = document.querySelector('#search_form, form[action="/search"]');
-      const sidebar = document.querySelector('#sidebar');
-      const mainResults =
-        document.getElementById('main_results') ||
-        document.querySelector('#results, .results');
-
-      const qInput = document.querySelector('input[name="q"]');
-      const query = qInput && qInput.value ? qInput.value.trim() : '';
-
-      if (form && mainResults && query) return { form, sidebar, mainResults, query };
-      await sleep(CONFIG.BOOTSTRAP_INTERVAL_MS);
-    }
-    return null;
-  }
-
-  // ===== メイン =====
+  // ===== メイン処理（0.9.1と同じ流れを維持） =====
   try {
-    showBadge('Gemini: DOM待ち');
+    const form = document.querySelector('#search_form, form[action="/search"]');
+    const sidebar = document.querySelector('#sidebar');
+    const mainResults =
+      document.getElementById('main_results') ||
+      document.querySelector('#results, .results');
 
-    const t = await waitTargets();
-    if (!t) {
-      showBadge('Gemini: DOM検出失敗');
+    if (!form || !mainResults) {
+      log.info('SearXNG検索結果ページではないか、DOM構造が非対応です');
       return;
     }
 
-    const { form, sidebar, mainResults, query } = t;
+    const qInput = document.querySelector('input[name="q"]');
+    const query = qInput?.value?.trim();
+    if (!query) {
+      log.info('検索クエリが空です');
+      return;
+    }
 
-    showBadge('Gemini: UI挿入');
     const { contentEl: answerEl, statusEl: answerStatusEl, wrapper: answerWrapper } =
       createAnswerBox(mainResults, sidebar);
 
@@ -719,7 +739,14 @@ ${summarySnippets}
       summaryTimeEl = s.timeEl;
     }
 
-    // キャッシュ
+    const apiKey = await getApiKey(false);
+    if (!apiKey) {
+      answerStatusEl.textContent = 'APIキー未設定';
+      answerEl.textContent = '🔑「キー再設定」からAPIキーを入力してください。';
+      if (summaryContentEl) summaryContentEl.textContent = 'APIキー未設定';
+      return;
+    }
+
     const cacheKey = normalizeQuery(query);
     const cache = getSummaryCache();
     if (summaryContentEl && cache.data[cacheKey]) {
@@ -727,25 +754,15 @@ ${summarySnippets}
       summaryContentEl.innerHTML = cached.html;
       summaryTimeEl.textContent = cached.time;
       setupCollapsible(summaryContentEl, 260);
+      log.info('概要: キャッシュを使用:', query);
     }
 
-    showBadge('Gemini: APIキー確認');
-    const apiKey = await getApiKey(false);
-    if (!apiKey) {
-      answerStatusEl.textContent = 'APIキー未設定';
-      answerEl.textContent = '🔑「キー再設定」からAPIキーを入力してください。';
-      showBadge('Gemini: キー未設定');
-      return;
-    }
-
-    // 検索結果取得
-    showBadge('Gemini: スニペット収集中');
     const results = await fetchSearchResults(form, mainResults, CONFIG.MAX_RESULTS);
+    const excludePatterns = [/google キャッシュ$/i];
 
     const snippetsArr = [];
     const urlList = [];
     let totalChars = 0;
-    const excludePatterns = [/google キャッシュ$/i];
 
     for (const r of results) {
       const snippetEl = r.querySelector('.result__snippet') || r;
@@ -763,7 +780,7 @@ ${summarySnippets}
 
     const snippets = snippetsArr.map((t, i) => `${i + 1}. ${t}`).join('\n\n');
 
-    // 概要用（weblio/wikipedia除外）
+    // 概要用: weblio / wikipedia を除いた上位5件だけ
     const summarySnippetsArr = [];
     const summaryUrls = [];
     for (let i = 0; i < snippetsArr.length && summarySnippetsArr.length < 5; i++) {
@@ -772,26 +789,31 @@ ${summarySnippets}
       summarySnippetsArr.push(snippetsArr[i]);
       summaryUrls.push(url);
     }
-    const summarySnippets = summarySnippetsArr.map((t, i) => `${i + 1}. ${t}`).join('\n\n');
+    const summarySnippets = summarySnippetsArr
+      .map((t, i) => `${i + 1}. ${t}`)
+      .join('\n\n');
 
-    showBadge('Gemini: 回答生成');
+    // 実行
     callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
 
     if (summaryContentEl && !cache.data[cacheKey]) {
       if (summarySnippetsArr.length > 0) {
         setTimeout(() => {
-          showBadge('Gemini: 概要生成');
-          callGeminiSummary(apiKey, query, summarySnippets, summaryUrls, summaryContentEl, summaryTimeEl, cacheKey);
+          callGeminiSummary(
+            apiKey,
+            query,
+            summarySnippets,
+            summaryUrls,
+            summaryContentEl,
+            summaryTimeEl,
+            cacheKey
+          );
         }, CONFIG.SUMMARY_START_DELAY_MS);
       } else {
         summaryContentEl.textContent = '概要生成に利用できるサイトが見つかりませんでした。';
       }
     }
-
-    showBadge('Gemini: 実行中');
   } catch (e) {
-    lastFatal = (e && (e.stack || e.message)) ? String(e.stack || e.message) : String(e);
-    log.error('致命エラー:', e);
-    showBadge('Gemini: 致命エラー');
+    console.error('[Gemini] fatal:', e);
   }
 })();
