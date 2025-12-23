@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SearXNG Gemini Answer + Summary (combined, zofumixng, sidebar always)
+// @name         SearXNG Gemini Answer + Summary (enhanced, full improvements)
 // @namespace    https://example.com/searxng-gemini-combined
-// @version      0.9.1.2
-// @description  0.9.1互換＋🔑キー再設定ボタン（最小変更）
+// @version      1.1.0
+// @description  並列呼び出し・リトライ・モデル切り替え・コピーボタン・ローディング・再生成・XSS強化などフル改善版
 // @author       you
 // @match        *://zofumixng.onrender.com/*
 // @grant        none
@@ -15,7 +15,21 @@
 
   // ===== 設定 =====
   const CONFIG = {
-    MODEL_NAME: 'gemini-2.0-flash',
+    MODELS: {
+      flash: {
+        id: 'gemini-2.0-flash',
+        label: 'Flash（速い）'
+      },
+      thinking: {
+        id: 'gemini-2.0-flash-thinking',
+        label: 'Thinking（高精度）'
+      },
+      pro: {
+        id: 'gemini-2.5-pro-latest',
+        label: 'Pro（最高品質）'
+      }
+    },
+    MODEL_KEY: 'GEMINI_MODEL_KEY',
     MAX_RESULTS: 20,
     SNIPPET_CHAR_LIMIT: 5000,
     SUMMARY_CACHE_KEY: 'GEMINI_SUMMARY_CACHE',
@@ -25,8 +39,11 @@
 
   const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-  // 32文字のランダム英数字推奨（共通鍵）
-  const FIXED_KEY = '1234567890abcdef1234567890abcdef';
+  let currentModelKey =
+    localStorage.getItem(CONFIG.MODEL_KEY) || 'flash';
+  if (!CONFIG.MODELS[currentModelKey]) {
+    currentModelKey = 'flash';
+  }
 
   const log = {
     debug: (...a) => console.debug('[Gemini][DEBUG]', ...a),
@@ -35,9 +52,12 @@
     error: (...a) => console.error('[Gemini][ERROR]', ...a)
   };
 
-  // ★ 追加：Gemini API URL を共通化（挙動は0.9.1と同じ）
+  // 固定鍵（端末ローカル暗号化用、32文字推奨）
+  const FIXED_KEY = '1234567890abcdef1234567890abcdef';
+
+  // ===== 共通関数 =====
   const geminiUrl = (apiKey) =>
-    `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODEL_NAME}:generateContent?key=${apiKey}`;
+    `https://generativelanguage.googleapis.com/v1/models/${CONFIG.MODELS[currentModelKey].id}:generateContent?key=${apiKey}`;
 
   function normalizeQuery(q) {
     return q
@@ -47,10 +67,10 @@
       .replace(/\s+/g, ' ');
   }
 
+  // Markdownの**太字**だけHTML strongにする（最低限）
   const formatResponse = text =>
     String(text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-  // ===== 回答の軽い整形 =====
   function prettifyAnswer(text) {
     if (!text) return '';
     let t = String(text).trim();
@@ -63,7 +83,6 @@
     return t.trim();
   }
 
-  // ===== 長文折りたたみ（もっと見る / 閉じる） =====
   function setupCollapsible(el, maxHeightPx = 260) {
     if (!el || !el.parentNode) return;
 
@@ -103,6 +122,42 @@
 
       el.parentNode.appendChild(toggle);
     });
+  }
+
+  // ===== ローディング表示 =====
+  function setLoading(el, isLoading, textWhenLoading = '生成中...') {
+    if (!el) return;
+    if (isLoading) {
+      el.dataset.prevText = el.textContent || '';
+      el.textContent = textWhenLoading;
+    } else {
+      const prev = el.dataset.prevText;
+      if (typeof prev === 'string') {
+        el.textContent = prev;
+      }
+      delete el.dataset.prevText;
+    }
+  }
+
+  // ===== API呼び出し：リトライ付き =====
+  async function fetchWithRetry(url, options, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const resp = await fetch(url, options);
+        if (resp.status === 429 && i < maxRetries - 1) {
+          const wait = (i === 0 ? 2000 : Math.pow(2, i) * 1000);
+          log.warn(`429 Too Many Requests. Retry in ${wait}ms`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        return resp;
+      } catch (e) {
+        if (i === maxRetries - 1) throw e;
+        const wait = (i === 0 ? 2000 : Math.pow(2, i) * 1000);
+        log.warn(`Network error, retry in ${wait}ms`, e);
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
   }
 
   // ===== AES-GCM で API キー暗号化保存 =====
@@ -220,7 +275,7 @@
                border-radius:6px;
                background:${isDark ? '#333' : '#fafafa'};
                color:inherit;"/>
-      <div style="display:flex;justify-content:space-between;gap:1em;max-width:260px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;gap:1em;max-width:320px;margin:0 auto;">
         <button id="gemini-save-btn"
           style="flex:1;background:#0078d4;color:#fff;border:none;
                  padding:0.5em 1.2em;border-radius:8px;cursor:pointer;font-weight:bold;">
@@ -330,12 +385,18 @@
     return { contentEl, timeEl };
   }
 
-  // ===== 回答 UI 作成 =====
+  // ===== 回答 UI 作成（モデル選択＋コピー＋キー再設定＋再生成） =====
   function createAnswerBox(mainResults, sidebar) {
     const wrapper = document.createElement('div');
     wrapper.style.margin = '0 0 1em 0';
 
-    // ★ 追加：🔑キー再設定ボタン（UI以外の挙動は触らない）
+    const modelOptionsHtml = Object.entries(CONFIG.MODELS)
+      .map(([key, m]) => {
+        const selected = key === currentModelKey ? 'selected' : '';
+        return `<option value="${key}" ${selected}>${m.label}</option>`;
+      })
+      .join('');
+
     wrapper.innerHTML = `
       <div style="
         border-radius:12px;
@@ -346,7 +407,7 @@
         font-family:inherit;
       ">
         <div style="display:flex;justify-content:space-between;align-items:center;
-                    margin-bottom:0.4em;">
+                    margin-bottom:0.4em;gap:0.5em;flex-wrap:wrap;">
           <div style="font-weight:600;font-size:1em;display:flex;align-items:center;gap:0.6em;">
             <span>Gemini AI 回答</span>
             <button class="gemini-reset-key" type="button"
@@ -354,8 +415,26 @@
               🔑キー再設定
             </button>
           </div>
-          <span class="gemini-answer-status"
-                style="font-size:0.8em;opacity:0.7;">問い合わせ中...</span>
+          <div style="display:flex;align-items:center;gap:0.5em;flex-wrap:wrap;">
+            <label style="font-size:0.8em;opacity:0.7;">モデル:</label>
+            <select class="gemini-model-select"
+              style="font-size:0.8em;padding:0.1em 0.4em;border-radius:6px;
+                     border:1px solid ${isDark ? '#555' : '#ccc'};
+                     background:${isDark ? '#222' : '#fff'};
+                     color:inherit;">
+              ${modelOptionsHtml}
+            </select>
+            <button class="gemini-regenerate-btn" type="button"
+              style="border:none;background:none;cursor:pointer;font-size:0.85em;opacity:0.85;padding:0 0 0 0.4em;">
+              🔄再生成
+            </button>
+            <button class="gemini-copy-btn" type="button"
+              style="border:none;background:none;cursor:pointer;font-size:0.85em;opacity:0.85;padding:0 0 0 0.4em;">
+              📋コピー
+            </button>
+            <span class="gemini-answer-status"
+                  style="font-size:0.8em;opacity:0.7;">問い合わせ中...</span>
+          </div>
         </div>
         <div class="gemini-answer-content"
              style="line-height:1.6;white-space:pre-wrap;"></div>
@@ -369,20 +448,29 @@
     const contentEl = wrapper.querySelector('.gemini-answer-content');
     const statusEl = wrapper.querySelector('.gemini-answer-status');
     const resetBtn = wrapper.querySelector('.gemini-reset-key');
-    return { contentEl, statusEl, wrapper, resetBtn };
+    const copyBtn = wrapper.querySelector('.gemini-copy-btn');
+    const modelSelect = wrapper.querySelector('.gemini-model-select');
+    const regenBtn = wrapper.querySelector('.gemini-regenerate-btn');
+    return { contentEl, statusEl, wrapper, resetBtn, copyBtn, modelSelect, regenBtn };
   }
 
-  // ===== 概要レンダリング =====
+  // ===== 概要レンダリング（XSS軽減） =====
   function renderSummaryFromJson(jsonData, contentEl, timeEl, cacheKey, summaryUrls) {
     if (!jsonData || typeof jsonData !== 'object') {
       contentEl.textContent = '概要を取得できませんでした。';
       return;
     }
 
-    let html = '';
+    const frag = document.createDocumentFragment();
 
+    // 上位サイトの要約
     if (Array.isArray(jsonData.sites) && jsonData.sites.length > 0) {
-      html += '<section><h4>上位サイトの要約</h4><ol>';
+      const section = document.createElement('section');
+      const h4 = document.createElement('h4');
+      h4.textContent = '上位サイトの要約';
+      section.appendChild(h4);
+
+      const ol = document.createElement('ol');
 
       jsonData.sites.slice(0, 5).forEach((site, idx) => {
         const index = typeof site.index === 'number' ? site.index : idx + 1;
@@ -391,46 +479,90 @@
           url = summaryUrls[index - 1];
         }
 
-        let linkHtml = '';
+        const li = document.createElement('li');
+
+        const summarySpan = document.createElement('span');
+        summarySpan.textContent = site.summary || '';
+        li.appendChild(summarySpan);
+
         if (url) {
           try {
             const u = new URL(url);
             const domain = u.hostname.replace(/^www\./, '');
-            linkHtml = ` <a href="${url}" target="_blank">${domain}</a>`;
+            const a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = ` ${domain}`;
+            li.appendChild(a);
           } catch {
-            linkHtml = ` <a href="${url}" target="_blank">${url}</a>`;
+            const a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = ` ${url}`;
+            li.appendChild(a);
           }
         }
 
-        const summary = formatResponse(site.summary || '');
-        html += `<li>${summary}${linkHtml}</li>`;
+        ol.appendChild(li);
       });
 
-      html += '</ol></section>';
+      section.appendChild(ol);
+      frag.appendChild(section);
     }
 
+    // 全体のまとめ
     if (jsonData.overall) {
-      html += `<section><h4>全体のまとめ</h4><p>${formatResponse(jsonData.overall)}</p></section>`;
+      const section = document.createElement('section');
+      const h4 = document.createElement('h4');
+      h4.textContent = '全体のまとめ';
+      const p = document.createElement('p');
+      p.textContent = jsonData.overall;
+      section.appendChild(h4);
+      section.appendChild(p);
+      frag.appendChild(section);
     }
 
+    // 参考リンク
     if (Array.isArray(jsonData.urls) && jsonData.urls.length > 0) {
-      html += '<section><h4>参考リンク</h4><ul>';
+      const section = document.createElement('section');
+      const h4 = document.createElement('h4');
+      h4.textContent = '参考リンク';
+      const ul = document.createElement('ul');
+
       jsonData.urls.slice(0, 5).forEach(url => {
+        const li = document.createElement('li');
         try {
           const u = new URL(url);
           const domain = u.hostname.replace(/^www\./, '');
-          html += `<li><a href="${url}" target="_blank">${domain}</a></li>`;
+          const a = document.createElement('a');
+          a.href = url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = domain;
+          li.appendChild(a);
         } catch {
-          html += `<li><a href="${url}" target="_blank">${url}</a></li>`;
+          const a = document.createElement('a');
+          a.href = url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = url;
+          li.appendChild(a);
         }
+        ul.appendChild(li);
       });
-      html += '</ul></section>';
+
+      section.appendChild(h4);
+      section.appendChild(ul);
+      frag.appendChild(section);
     }
 
-    if (!html) {
+    contentEl.textContent = '';
+    if (!frag.children || frag.children.length === 0) {
       contentEl.textContent = '概要を取得できませんでした。';
     } else {
-      contentEl.innerHTML = html;
+      contentEl.appendChild(frag);
       setupCollapsible(contentEl, 260);
     }
 
@@ -487,14 +619,16 @@ ${summarySnippets}
 - マークダウン記法（# や * など）は使わないでください。
     `.trim();
 
+    setLoading(contentEl, true, '概要生成中...');
+
     try {
-      const resp = await fetch(geminiUrl(apiKey), {
+      const resp = await fetchWithRetry(geminiUrl(apiKey), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       });
-      if (!resp.ok) {
-        contentEl.textContent = `APIエラー: ${resp.status}`;
+      if (!resp || !resp.ok) {
+        contentEl.textContent = `APIエラー: ${resp ? resp.status : '不明'}（概要）`;
         return;
       }
       const data = await resp.json();
@@ -519,8 +653,10 @@ ${summarySnippets}
 
       renderSummaryFromJson(parsed, contentEl, timeEl, cacheKey, summaryUrls);
     } catch (e) {
-      contentEl.textContent = '通信に失敗しました';
+      contentEl.textContent = '通信に失敗しました（概要）';
       log.error(e);
+    } finally {
+      setLoading(contentEl, false);
     }
   }
 
@@ -539,14 +675,17 @@ ${snippets}
 - マークダウン記法（# や * など）は使わないでください。
     `.trim();
 
+    statusEl.textContent = '問い合わせ中...';
+    setLoading(answerEl, true, '回答生成中...');
+
     try {
-      const resp = await fetch(geminiUrl(apiKey), {
+      const resp = await fetchWithRetry(geminiUrl(apiKey), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       });
-      if (!resp.ok) {
-        statusEl.textContent = `APIエラー: ${resp.status}`;
+      if (!resp || !resp.ok) {
+        statusEl.textContent = `APIエラー: ${resp ? resp.status : '不明'}`;
         return;
       }
       const data = await resp.json();
@@ -554,10 +693,12 @@ ${snippets}
         data.candidates?.[0]?.content?.parts?.[0]?.text ||
         '回答を取得できませんでした。';
       const pretty = prettifyAnswer(raw);
+      setLoading(answerEl, false);
       answerEl.textContent = pretty;
       setupCollapsible(answerEl, 260);
       statusEl.textContent = '完了';
     } catch (e) {
+      setLoading(answerEl, false);
       statusEl.textContent = '通信エラー';
       log.error(e);
     }
@@ -592,14 +733,51 @@ ${snippets}
     contentEl: answerEl,
     statusEl: answerStatusEl,
     wrapper: answerWrapper,
-    resetBtn
+    resetBtn,
+    copyBtn,
+    modelSelect,
+    regenBtn
   } = createAnswerBox(mainResults, sidebar);
 
-  // ★ 追加：キー再設定（キー削除→リロード）
+  // キー再設定
   if (resetBtn) {
     resetBtn.addEventListener('click', async () => {
       try { localStorage.removeItem('GEMINI_API_KEY'); } catch {}
       setTimeout(() => location.reload(), 50);
+    });
+  }
+
+  // モデル切り替え
+  if (modelSelect) {
+    modelSelect.addEventListener('change', e => {
+      const val = e.target.value;
+      if (CONFIG.MODELS[val]) {
+        currentModelKey = val;
+        localStorage.setItem(CONFIG.MODEL_KEY, val);
+        answerStatusEl.textContent = 'モデル変更済み（再生成で反映）';
+      }
+    });
+  }
+
+  // コピーボタン
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      const text = answerEl.textContent || '';
+      if (!text) {
+        copyBtn.textContent = '⚠️内容なし';
+        setTimeout(() => (copyBtn.textContent = '📋コピー'), 1500);
+        return;
+      }
+      navigator.clipboard.writeText(text).then(
+        () => {
+          copyBtn.textContent = '✅コピー完了';
+          setTimeout(() => (copyBtn.textContent = '📋コピー'), 1500);
+        },
+        () => {
+          copyBtn.textContent = '⚠️失敗';
+          setTimeout(() => (copyBtn.textContent = '📋コピー'), 1500);
+        }
+      );
     });
   }
 
@@ -659,21 +837,38 @@ ${snippets}
     .map((t, i) => `${i + 1}. ${t}`)
     .join('\n\n');
 
+  // ===== 回答の再生成ボタン =====
+  async function regenerate() {
+    await callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
+  }
+  if (regenBtn) {
+    regenBtn.addEventListener('click', () => {
+      regenerate();
+    });
+  }
+
+  // ===== 並列実行（回答＆要約） =====
+  const tasks = [
+    callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl)
+  ];
   if (summaryContentEl && !cache.data[cacheKey]) {
     if (summarySnippetsArr.length > 0) {
-      callGeminiSummary(
-        apiKey,
-        query,
-        summarySnippets,
-        summaryUrls,
-        summaryContentEl,
-        summaryTimeEl,
-        cacheKey
+      tasks.push(
+        callGeminiSummary(
+          apiKey,
+          query,
+          summarySnippets,
+          summaryUrls,
+          summaryContentEl,
+          summaryTimeEl,
+          cacheKey
+        )
       );
     } else {
-      summaryContentEl.textContent = '概要生成に利用できるサイトが見つかりませんでした。';
+      summaryContentEl.textContent =
+        '概要生成に利用できるサイトが見つかりませんでした。';
     }
   }
 
-  callGeminiAnswer(apiKey, query, snippets, answerEl, answerStatusEl);
+  await Promise.all(tasks);
 })();
