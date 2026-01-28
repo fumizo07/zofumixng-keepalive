@@ -16,8 +16,7 @@
   'use strict';
 
   // ====== 共有シークレット（合言葉）で自サイト判定 ======
-  // サーバ側HTMLに: <meta name="kb-allow" content="(合言葉)"> を入れておく
-  const KB_ALLOW_META_NAME = 'kb-allow';
+  const KB_ALLOW_META_NAME = 'kb-allow-konbankonban';
   const KB_ALLOW_LS_KEY = 'kb_allow_secret_v1';
 
   function getLocalSecret() {
