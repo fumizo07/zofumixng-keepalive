@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.2
+// @version      0.3.3
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 002
+// 003
 
 (() => {
   'use strict';
@@ -18,12 +18,16 @@
   // ====== 共有シークレット（合言葉）で自サイト判定 ======
   const KB_ALLOW_META_NAME = 'kb-allow-konbankonban';
   const KB_ALLOW_LS_KEY = 'kb_allow_secret_v1';
+  const KB_ALLOW_PROMPT_MSG = '合言葉を入力してください';
 
   function getLocalSecret() {
     try { return String(localStorage.getItem(KB_ALLOW_LS_KEY) || '').trim(); } catch { return ''; }
   }
   function setLocalSecret(v) {
     try { localStorage.setItem(KB_ALLOW_LS_KEY, String(v || '').trim()); } catch {}
+  }
+  function clearLocalSecret() {
+    try { localStorage.removeItem(KB_ALLOW_LS_KEY); } catch {}
   }
 
   function getMetaSecret() {
@@ -34,16 +38,33 @@
 
   function ensureAllowSecret() {
     const meta = getMetaSecret();
-    if (!meta) return false;
+    if (!meta) return false; // 自サイト以外は即終了（promptも出ない）
 
     let sec = getLocalSecret();
+
+    // 既に保存されているが、metaと一致しない（=間違えて保存 / 後からサーバ側が変わった）
+    if (sec && sec !== meta) {
+      // 一度消して再入力へ
+      clearLocalSecret();
+      sec = '';
+    }
+
+    // 未保存なら入力させる（初回 or 不一致で消した後）
     if (!sec) {
-      // 初回だけ入力 → 以後はこのブラウザだけに保存（Userscriptに合言葉を残さない）
-      sec = String(prompt('KB allow secret を入力してください') || '').trim();
-      if (!sec) return false;
+      const input = prompt(KB_ALLOW_PROMPT_MSG);
+      sec = String(input || '').trim();
+      if (!sec) {
+        // キャンセル/空入力は確実に未保存で終える
+        clearLocalSecret();
+        return false;
+      }
       setLocalSecret(sec);
     }
-    return sec === meta;
+
+    // 最終判定（ここでfalseなら、次回また聞けるように消して終える）
+    const ok = (sec === meta);
+    if (!ok) clearLocalSecret();
+    return ok;
   }
 
   // 自サイト以外では何もしない（ドメインを書かない）
