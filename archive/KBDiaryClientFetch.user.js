@@ -1,19 +1,54 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.1
-// @description  Fetch diary latest timestamp in real browser and push to KB server, only when kb-diary-slot exists.
-// @match        https://zofusai.onrender.com/*
+// @version      0.3.2
+// @description  Fetch diary latest timestamp in real browser and push to KB server
+// @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
 // @connect      cityheaven.net
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 001
+// 002
 
 (() => {
   'use strict';
+
+  // ====== 共有シークレット（合言葉）で自サイト判定 ======
+  // サーバ側HTMLに: <meta name="kb-allow" content="(合言葉)"> を入れておく
+  const KB_ALLOW_META_NAME = 'kb-allow';
+  const KB_ALLOW_LS_KEY = 'kb_allow_secret_v1';
+
+  function getLocalSecret() {
+    try { return String(localStorage.getItem(KB_ALLOW_LS_KEY) || '').trim(); } catch { return ''; }
+  }
+  function setLocalSecret(v) {
+    try { localStorage.setItem(KB_ALLOW_LS_KEY, String(v || '').trim()); } catch {}
+  }
+
+  function getMetaSecret() {
+    const el = document.querySelector(`meta[name="${KB_ALLOW_META_NAME}"]`);
+    if (!el) return '';
+    return String(el.getAttribute('content') || '').trim();
+  }
+
+  function ensureAllowSecret() {
+    const meta = getMetaSecret();
+    if (!meta) return false;
+
+    let sec = getLocalSecret();
+    if (!sec) {
+      // 初回だけ入力 → 以後はこのブラウザだけに保存（Userscriptに合言葉を残さない）
+      sec = String(prompt('KB allow secret を入力してください') || '').trim();
+      if (!sec) return false;
+      setLocalSecret(sec);
+    }
+    return sec === meta;
+  }
+
+  // 自サイト以外では何もしない（ドメインを書かない）
+  if (!ensureAllowSecret()) return;
 
   // ====== 設定 ======
   const PUSH_ENDPOINT = '/kb/api/diary_push';
@@ -286,4 +321,3 @@
   });
   mo.observe(document.documentElement, { childList: true, subtree: true });
 })();
-
