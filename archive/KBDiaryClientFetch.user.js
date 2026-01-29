@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.7
+// @version      0.3.8
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 005
+// 006
 
 (() => {
   'use strict';
@@ -389,5 +389,9 @@
   });
 
   mo.observe(document.documentElement, { childList: true, subtree: true });
+
+  setInterval(() => {
+    runOnce().catch(() => {});
+  }, MIN_RUN_INTERVAL_MS);
 
 })();
