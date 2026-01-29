@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.4
+// @version      0.3.5
 // @description  Fetch diary latest timestamp in real browser and push to KB server
-// @match        *://*/*
+// @match        https://*/kb/*
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
 // @connect      cityheaven.net
