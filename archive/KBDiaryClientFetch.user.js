@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.3
+// @version      0.3.4
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 003
+// 004
 
 (() => {
   'use strict';
@@ -44,7 +44,6 @@
 
     // 既に保存されているが、metaと一致しない（=間違えて保存 / 後からサーバ側が変わった）
     if (sec && sec !== meta) {
-      // 一度消して再入力へ
       clearLocalSecret();
       sec = '';
     }
@@ -54,7 +53,6 @@
       const input = prompt(KB_ALLOW_PROMPT_MSG);
       sec = String(input || '').trim();
       if (!sec) {
-        // キャンセル/空入力は確実に未保存で終える
         clearLocalSecret();
         return false;
       }
@@ -125,10 +123,8 @@
   }
 
   async function ensureCsrf() {
-    // 既にクッキーがあるならOK
     if (getCookie(CSRF_COOKIE_NAME)) return true;
 
-    // なければサーバに発行させる（同一オリジン）
     try {
       const r = await fetch(CSRF_INIT_ENDPOINT, {
         method: 'GET',
@@ -201,7 +197,6 @@
     let y = guessYear(ym.y, ym.mo, mm);
     if (y == null) y = new Date().getFullYear();
 
-    // JSTとして組み立て → UTC msへ
     const iso = `${y}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${String(mi).padStart(2, '0')}:00+09:00`;
     const dt = new Date(iso);
     const ts = dt.getTime();
@@ -217,14 +212,11 @@
   }
 
   function isTrackedSlot(el) {
-    // HTML側で data-diary-track="1|0" を持つ想定。
-    // 無い場合は「追跡ON扱い」にして挙動を壊さない。
     const v = String(el.getAttribute('data-diary-track') || '1').trim();
     return v === '1';
   }
 
   function collectSlots() {
-    // kb.jsに合わせて data-kb-diary-slot を優先（classだけより堅い）
     const nodes = Array.from(document.querySelectorAll('[data-kb-diary-slot][data-person-id]'));
     const out = [];
     for (const el of nodes) {
@@ -238,7 +230,6 @@
       if (out.length >= MAX_IDS) break;
     }
 
-    // idをユニーク化
     const seen = new Set();
     const uniq = [];
     for (const x of out) {
@@ -248,6 +239,14 @@
       uniq.push(x);
     }
     return uniq;
+  }
+
+  function notifyPushed(ids) {
+    // kb.js 側が対応していれば、push直後に画面更新へ繋げられる
+    try { window.dispatchEvent(new CustomEvent('kb-diary-pushed', { detail: { ids } })); } catch {}
+    try {
+      if (typeof window.kbDiaryRefresh === 'function') window.kbDiaryRefresh(ids);
+    } catch {}
   }
 
   async function pushResults(batch) {
@@ -268,7 +267,6 @@
       keepalive: true,
     });
 
-    // 失敗しても黙って終わる（表示はkb.js側）
     try { await res.json(); } catch {}
     return res.ok;
   }
@@ -324,7 +322,9 @@
     });
 
     await Promise.all(workers);
-    await pushResults(results);
+
+    const ok = await pushResults(results);
+    if (ok) notifyPushed(results.map(x => x.id));
   }
 
   // ===== 起動条件：slotがあるときだけ動く =====
