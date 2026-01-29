@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.8
+// @version      0.3.9
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 006
+// 007
 
 (() => {
   'use strict';
@@ -393,5 +393,13 @@
   setInterval(() => {
     runOnce().catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
+  
+  // ★手動で「今すぐ取得→push」したい時の逃げ道
+  // 使い方：ブラウザのConsoleで  window.kbDiaryForcePush()
+  window.kbDiaryForcePush = () => {
+    lastRunAt = 0;        // 10分ガードを一時解除
+    running = false;      // 念のため（実害は少ないけど保険）
+    runOnce().catch(() => {});
+  };
 
 })();
