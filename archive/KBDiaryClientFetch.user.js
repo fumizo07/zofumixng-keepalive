@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.6
+// @version      0.3.7
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 004
+// 005
 
 (() => {
   'use strict';
@@ -42,13 +42,11 @@
 
     let sec = getLocalSecret();
 
-    // 既に保存されているが、metaと一致しない（=間違えて保存 / 後からサーバ側が変わった）
     if (sec && sec !== meta) {
       clearLocalSecret();
       sec = '';
     }
 
-    // 未保存なら入力させる（初回 or 不一致で消した後）
     if (!sec) {
       const input = prompt(KB_ALLOW_PROMPT_MSG);
       sec = String(input || '').trim();
@@ -59,13 +57,11 @@
       setLocalSecret(sec);
     }
 
-    // 最終判定（ここでfalseなら、次回また聞けるように消して終える）
     const ok = (sec === meta);
     if (!ok) clearLocalSecret();
     return ok;
   }
 
-  // 自サイト以外では何もしない（ドメインを書かない）
   if (!ensureAllowSecret()) return;
 
   // ====== 設定 ======
@@ -74,7 +70,8 @@
   const CSRF_COOKIE_NAME = 'kb_csrf';
   const CSRF_HEADER_NAME = 'X-KB-CSRF';
 
-  const CACHE_TTL_MS = 10 * 60 * 1000; // 10分
+  const CACHE_TTL_MS = 10 * 60 * 1000; // 10分（外部サイト取得キャッシュ）
+  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // ★暴走防止：最低でも10分に1回
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
 
@@ -226,10 +223,11 @@
       const du = normalizeDiaryUrl(el.getAttribute('data-diary-url') || '');
       if (!pid || !du) continue;
 
-      out.push({ el, id: pid, diaryUrl: du });
+      out.push({ id: pid, diaryUrl: du });
       if (out.length >= MAX_IDS) break;
     }
 
+    // idでユニーク化
     const seen = new Set();
     const uniq = [];
     for (const x of out) {
@@ -241,12 +239,18 @@
     return uniq;
   }
 
+  function computeSlotsSignature(slots) {
+    // DOMの「テキスト更新」では変わらず、スロットの追加/削除/URL変更でだけ変わる
+    return slots
+      .slice()
+      .sort((a, b) => (a.id - b.id))
+      .map(x => `${x.id}|${x.diaryUrl}`)
+      .join(',');
+  }
+
   function notifyPushed(ids) {
-    // kb.js 側が対応していれば、push直後に画面更新へ繋げられる
+    // ★二重発火を廃止：イベントだけ送る（kb.js側が対応していれば即時更新）
     try { window.dispatchEvent(new CustomEvent('kb-diary-pushed', { detail: { ids } })); } catch {}
-    try {
-      if (typeof window.kbDiaryRefresh === 'function') window.kbDiaryRefresh(ids);
-    } catch {}
   }
 
   async function pushResults(batch) {
@@ -304,40 +308,86 @@
     }
   }
 
+  let running = false;
+  let lastRunAt = 0;
+
   async function runOnce() {
+    if (running) return;
+
+    const now = nowMs();
+    if (lastRunAt && (now - lastRunAt) < MIN_RUN_INTERVAL_MS) {
+      return; // ★暴走防止：短時間で再実行しない
+    }
+
     const slots = collectSlots();
     if (!slots.length) return;
 
-    const tasks = slots.map(s => ({ id: s.id, diaryUrl: s.diaryUrl }));
+    running = true;
+    lastRunAt = now;
 
-    const results = [];
-    let idx = 0;
+    try {
+      const tasks = slots.map(s => ({ id: s.id, diaryUrl: s.diaryUrl }));
+      const results = [];
+      let idx = 0;
 
-    const workers = Array.from({ length: CONCURRENCY }, async () => {
-      while (idx < tasks.length) {
-        const t = tasks[idx++];
-        const r = await workerFetchOne(t);
-        results.push(r);
-      }
-    });
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        while (idx < tasks.length) {
+          const t = tasks[idx++];
+          const r = await workerFetchOne(t);
+          results.push(r);
+        }
+      });
 
-    await Promise.all(workers);
+      await Promise.all(workers);
 
-    const ok = await pushResults(results);
-    if (ok) notifyPushed(results.map(x => x.id));
+      const ok = await pushResults(results);
+      if (ok) notifyPushed(results.map(x => x.id));
+    } catch (_) {
+      // 失敗しても暴走しないように、ここでは何もしない
+    } finally {
+      running = false;
+    }
   }
 
-  // ===== 起動条件：slotがあるときだけ動く =====
+  // ===== 起動＆監視（slot集合が変わった時だけ走る） =====
+  let lastSig = '';
   let timer = null;
-  function schedule() {
+
+  function schedule(reason) {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => runOnce().catch(() => {}), 600);
+    timer = setTimeout(() => {
+      runOnce().catch(() => {});
+    }, 600);
   }
 
-  schedule();
+  function checkSlotsChangedAndSchedule() {
+    const slots = collectSlots();
+    const sig = computeSlotsSignature(slots);
+    if (!sig) return;
+    if (sig === lastSig) return;
+    lastSig = sig;
+    schedule('slots_changed');
+  }
 
-  const mo = new MutationObserver(() => {
-    if (document.querySelector('[data-kb-diary-slot][data-person-id]')) schedule();
+  // 初回：slotがあれば1回だけ
+  checkSlotsChangedAndSchedule();
+
+  const mo = new MutationObserver((mutations) => {
+    // ★追加/削除のときだけ反応（テキスト更新は基本的に無視）
+    let touched = false;
+    for (const m of mutations) {
+      if (m.type !== 'childList') continue;
+      if ((m.addedNodes && m.addedNodes.length) || (m.removedNodes && m.removedNodes.length)) {
+        touched = true;
+        break;
+      }
+    }
+    if (!touched) return;
+
+    // ここで「slot集合が変わったか」を確定判定
+    checkSlotsChangedAndSchedule();
   });
+
   mo.observe(document.documentElement, { childList: true, subtree: true });
+
 })();
