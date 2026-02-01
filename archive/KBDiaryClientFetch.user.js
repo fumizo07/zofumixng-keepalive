@@ -208,7 +208,6 @@
     let url;
     try {
       // data-diary-url が絶対URL前提（多分そう）なので普通はこれでOK
-      // もし相対URLが混ざるなら、https://www.cityheaven.net をベースに解釈します
       url = raw.startsWith('http://') || raw.startsWith('https://')
         ? new URL(raw)
         : new URL(raw, 'https://www.cityheaven.net');
@@ -225,7 +224,7 @@
     }
   
     // 競合しやすいのを掃除（念のため）
-    // cityheaven 側は pcmode=sp と spmode=pc を見てUIを切り替える挙動があるので、混在させない
+    // pcmode=sp と spmode=pc を見てUIを切り替える挙動があるので、混在させない
     url.searchParams.delete('pcmode');
     url.searchParams.set('spmode', 'pc');
   
