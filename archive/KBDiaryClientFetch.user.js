@@ -202,11 +202,36 @@
   }
 
   function normalizeDiaryUrl(u) {
-    const s = (u || '').trim();
-    if (!s) return '';
-    if (s.replace(/\/+$/, '').endsWith('/diary')) return s.replace(/\/+$/, '');
-    return s.replace(/\/+$/, '') + '/diary';
+    const raw = String(u || '').trim();
+    if (!raw) return '';
+  
+    let url;
+    try {
+      // data-diary-url が絶対URL前提（多分そう）なので普通はこれでOK
+      // もし相対URLが混ざるなら、https://www.cityheaven.net をベースに解釈します
+      url = raw.startsWith('http://') || raw.startsWith('https://')
+        ? new URL(raw)
+        : new URL(raw, 'https://www.cityheaven.net');
+    } catch (_) {
+      return '';
+    }
+  
+    // 末尾スラッシュ除去
+    url.pathname = url.pathname.replace(/\/+$/, '');
+  
+    // /diary を必ず付ける
+    if (!url.pathname.endsWith('/diary')) {
+      url.pathname += '/diary';
+    }
+  
+    // 競合しやすいのを掃除（念のため）
+    // cityheaven 側は pcmode=sp と spmode=pc を見てUIを切り替える挙動があるので、混在させない
+    url.searchParams.delete('pcmode');
+    url.searchParams.set('spmode', 'pc');
+  
+    return url.toString();
   }
+
 
   function isTrackedSlot(el) {
     const v = String(el.getAttribute('data-diary-track') || '1').trim();
