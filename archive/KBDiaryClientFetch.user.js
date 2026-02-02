@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.9
+// @version      0.3.10
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 007
+// 008
 
 (() => {
   'use strict';
@@ -158,6 +158,8 @@
 
   // "12/30 23:47"
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
+  // <span class="diary_time">12/30 23:47</span> を拾う（複数ヒットするので g/i）
+  const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
   // "2026年1月"
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
 
@@ -179,32 +181,52 @@
 
   function parseLatestTsUtcMsFromHtml(html) {
     if (!html) return { ts: null, err: 'empty_html' };
-    const m = html.match(RE_MMDD_HHMM);
-    if (!m) return { ts: null, err: 'no_datetime_found' };
-
-    const mm = parseInt(m[1], 10);
-    const dd = parseInt(m[2], 10);
-    const hh = parseInt(m[3], 10);
-    const mi = parseInt(m[4], 10);
-    if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) {
-      return { ts: null, err: 'datetime_out_of_range' };
-    }
 
     const ym = extractYearMonth(html);
-    let y = guessYear(ym.y, ym.mo, mm);
-    if (y == null) y = new Date().getFullYear();
+    const headerY = ym.y;
+    const headerMo = ym.mo;
 
-    const iso = `${y}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${String(mi).padStart(2, '0')}:00+09:00`;
-    const dt = new Date(iso);
-    const ts = dt.getTime();
-    if (!Number.isFinite(ts) || ts <= 0) return { ts: null, err: 'datetime_to_epoch_failed' };
-    return { ts, err: '' };
+    let maxTs = null;
+    let foundAny = false;
+
+    let mSpan;
+    while ((mSpan = RE_DIARY_TIME_SPAN.exec(html)) !== null) {
+      const inner = String(mSpan[1] || '').replace(/<[^>]+>/g, ' ').trim();
+      const m = inner.match(RE_MMDD_HHMM);
+      if (!m) continue;
+
+      foundAny = true;
+
+      const mm = parseInt(m[1], 10);
+      const dd = parseInt(m[2], 10);
+      const hh = parseInt(m[3], 10);
+      const mi = parseInt(m[4], 10);
+
+      if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) {
+        continue;
+      }
+
+      let y = guessYear(headerY, headerMo, mm);
+      if (y == null) y = new Date().getFullYear();
+
+      const iso = `${y}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${String(mi).padStart(2, '0')}:00+09:00`;
+      const dt = new Date(iso);
+      const ts = dt.getTime();
+
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      if (maxTs == null || ts > maxTs) maxTs = ts;
+    }
+
+    if (!foundAny) return { ts: null, err: 'no_diary_time_found' };
+    if (maxTs == null) return { ts: null, err: 'diary_time_parse_failed' };
+
+    return { ts: maxTs, err: '' };
   }
 
   function normalizeDiaryUrl(u) {
     const raw = String(u || '').trim();
     if (!raw) return '';
-  
+
     let url;
     try {
       // data-diary-url が絶対URL前提（多分そう）なので普通はこれでOK
@@ -214,23 +236,22 @@
     } catch (_) {
       return '';
     }
-  
+
     // 末尾スラッシュ除去
     url.pathname = url.pathname.replace(/\/+$/, '');
-  
+
     // /diary を必ず付ける
     if (!url.pathname.endsWith('/diary')) {
       url.pathname += '/diary';
     }
-  
+
     // 競合しやすいのを掃除（念のため）
     // pcmode=sp と spmode=pc を見てUIを切り替える挙動があるので、混在させない
     url.searchParams.delete('pcmode');
     url.searchParams.set('spmode', 'pc');
-  
+
     return url.toString();
   }
-
 
   function isTrackedSlot(el) {
     const v = String(el.getAttribute('data-diary-track') || '1').trim();
@@ -417,7 +438,7 @@
   setInterval(() => {
     runOnce().catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
-  
+
   // ★手動で「今すぐ取得→push」したい時の逃げ道
   // 使い方：ブラウザのConsoleで  window.kbDiaryForcePush()
   window.kbDiaryForcePush = () => {
