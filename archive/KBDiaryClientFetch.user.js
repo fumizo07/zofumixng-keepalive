@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.10
+// @version      0.3.11
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 008
+// 009
 
 (() => {
   'use strict';
@@ -70,8 +70,8 @@
   const CSRF_COOKIE_NAME = 'kb_csrf';
   const CSRF_HEADER_NAME = 'X-KB-CSRF';
 
-  const CACHE_TTL_MS = 10 * 60 * 1000; // 10分（外部サイト取得キャッシュ）
-  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // ★暴走防止：最低でも10分に1回
+  const CACHE_TTL_MS = 10 * 60 * 1000;       // 10分（外部サイト取得キャッシュ）
+  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止）
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
 
@@ -158,7 +158,7 @@
 
   // "12/30 23:47"
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
-  // <span class="diary_time">12/30 23:47</span> を拾う（複数ヒットするので g/i）
+  // <span class="diary_time">12/30 23:47</span>
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
   // "2026年1月"
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
@@ -229,7 +229,6 @@
 
     let url;
     try {
-      // data-diary-url が絶対URL前提（多分そう）なので普通はこれでOK
       url = raw.startsWith('http://') || raw.startsWith('https://')
         ? new URL(raw)
         : new URL(raw, 'https://www.cityheaven.net');
@@ -237,16 +236,11 @@
       return '';
     }
 
-    // 末尾スラッシュ除去
     url.pathname = url.pathname.replace(/\/+$/, '');
-
-    // /diary を必ず付ける
     if (!url.pathname.endsWith('/diary')) {
       url.pathname += '/diary';
     }
 
-    // 競合しやすいのを掃除（念のため）
-    // pcmode=sp と spmode=pc を見てUIを切り替える挙動があるので、混在させない
     url.searchParams.delete('pcmode');
     url.searchParams.set('spmode', 'pc');
 
@@ -272,7 +266,6 @@
       if (out.length >= MAX_IDS) break;
     }
 
-    // idでユニーク化
     const seen = new Set();
     const uniq = [];
     for (const x of out) {
@@ -285,7 +278,6 @@
   }
 
   function computeSlotsSignature(slots) {
-    // DOMの「テキスト更新」では変わらず、スロットの追加/削除/URL変更でだけ変わる
     return slots
       .slice()
       .sort((a, b) => (a.id - b.id))
@@ -294,7 +286,6 @@
   }
 
   function notifyPushed(ids) {
-    // ★二重発火を廃止：イベントだけ送る（kb.js側が対応していれば即時更新）
     try { window.dispatchEvent(new CustomEvent('kb-diary-pushed', { detail: { ids } })); } catch {}
   }
 
@@ -356,16 +347,28 @@
   let running = false;
   let lastRunAt = 0;
 
-  async function runOnce() {
-    if (running) return;
-
-    const now = nowMs();
-    if (lastRunAt && (now - lastRunAt) < MIN_RUN_INTERVAL_MS) {
-      return; // ★暴走防止：短時間で再実行しない
+  function hasAnyUncached(slots) {
+    for (const s of slots) {
+      if (!getCached(s.diaryUrl)) return true;
     }
+    return false;
+  }
+
+  async function runOnce(reason) {
+    if (running) return;
 
     const slots = collectSlots();
     if (!slots.length) return;
+
+    const now = nowMs();
+    const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
+
+    // ★改善点：
+    // 10分ガードは維持するが、「未キャッシュURLが含まれる」なら即実行を許可する。
+    // これで検索結果が変わって新しい人が表示された時に、10分待ちが発生しにくい。
+    if (!intervalOk && !hasAnyUncached(slots)) {
+      return;
+    }
 
     running = true;
     lastRunAt = now;
@@ -388,7 +391,7 @@
       const ok = await pushResults(results);
       if (ok) notifyPushed(results.map(x => x.id));
     } catch (_) {
-      // 失敗しても暴走しないように、ここでは何もしない
+      // 失敗しても暴走しない
     } finally {
       running = false;
     }
@@ -401,7 +404,7 @@
   function schedule(reason) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      runOnce().catch(() => {});
+      runOnce(reason).catch(() => {});
     }, 600);
   }
 
@@ -414,11 +417,9 @@
     schedule('slots_changed');
   }
 
-  // 初回：slotがあれば1回だけ
   checkSlotsChangedAndSchedule();
 
   const mo = new MutationObserver((mutations) => {
-    // ★追加/削除のときだけ反応（テキスト更新は基本的に無視）
     let touched = false;
     for (const m of mutations) {
       if (m.type !== 'childList') continue;
@@ -428,23 +429,20 @@
       }
     }
     if (!touched) return;
-
-    // ここで「slot集合が変わったか」を確定判定
     checkSlotsChangedAndSchedule();
   });
 
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
   setInterval(() => {
-    runOnce().catch(() => {});
+    runOnce('interval').catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
   // ★手動で「今すぐ取得→push」したい時の逃げ道
-  // 使い方：ブラウザのConsoleで  window.kbDiaryForcePush()
   window.kbDiaryForcePush = () => {
-    lastRunAt = 0;        // 10分ガードを一時解除
-    running = false;      // 念のため（実害は少ないけど保険）
-    runOnce().catch(() => {});
+    lastRunAt = 0;
+    running = false;
+    runOnce('force').catch(() => {});
   };
 
 })();
