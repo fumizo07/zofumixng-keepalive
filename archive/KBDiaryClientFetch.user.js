@@ -9,6 +9,7 @@
 // @connect      cityheaven.net
 // @connect      www.dto.jp
 // @connect      dto.jp
+// @connect      s.dto.jp
 // ==/UserScript==
 // 010
 
