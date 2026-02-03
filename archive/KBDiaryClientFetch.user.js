@@ -10,7 +10,7 @@
 // @connect      www.dto.jp
 // @connect      dto.jp
 // ==/UserScript==
-// 009
+// 010
 
 (() => {
   'use strict';
@@ -70,7 +70,7 @@
   const CSRF_COOKIE_NAME = 'kb_csrf';
   const CSRF_HEADER_NAME = 'X-KB-CSRF';
 
-  const CACHE_TTL_MS = 10 * 60 * 1000;       // 10分（外部サイト取得キャッシュ）
+  const CACHE_TTL_MS = 10 * 60 * 1000;        // 10分（外部サイト取得キャッシュ）
   const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止）
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
@@ -311,12 +311,15 @@
     return res.ok;
   }
 
-  async function workerFetchOne(task) {
+  // ★変更点：forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
+  async function workerFetchOne(task, forceNoCache) {
     const { id, diaryUrl } = task;
 
-    const c = getCached(diaryUrl);
-    if (c) {
-      return { id, latest_ts: c.latestTs, error: c.error || '', checked_at_ms: nowMs() };
+    if (!forceNoCache) {
+      const c = getCached(diaryUrl);
+      if (c) {
+        return { id, latest_ts: c.latestTs, error: c.error || '', checked_at_ms: nowMs() };
+      }
     }
 
     await sleep(250 + Math.floor(Math.random() * 350));
@@ -324,7 +327,7 @@
     const r = await gmGet(diaryUrl);
     if (!r.ok) {
       const err = r.error || 'gm_error';
-      setCached(diaryUrl, null, err);
+      setCached(diaryUrl, null, err); // force時も更新して次回安定
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
 
@@ -360,14 +363,19 @@
     const slots = collectSlots();
     if (!slots.length) return;
 
+    const forceNoCache = (String(reason || '') === 'force');
+
     const now = nowMs();
     const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
 
-    // ★改善点：
+    // ★改善点（既存）：
     // 10分ガードは維持するが、「未キャッシュURLが含まれる」なら即実行を許可する。
-    // これで検索結果が変わって新しい人が表示された時に、10分待ちが発生しにくい。
-    if (!intervalOk && !hasAnyUncached(slots)) {
-      return;
+    // ★追加（今回）：
+    // force のときは 10分ガード条件を無視して必ず実行する。
+    if (!forceNoCache) {
+      if (!intervalOk && !hasAnyUncached(slots)) {
+        return;
+      }
     }
 
     running = true;
@@ -381,7 +389,7 @@
       const workers = Array.from({ length: CONCURRENCY }, async () => {
         while (idx < tasks.length) {
           const t = tasks[idx++];
-          const r = await workerFetchOne(t);
+          const r = await workerFetchOne(t, forceNoCache);
           results.push(r);
         }
       });
@@ -439,6 +447,7 @@
   }, MIN_RUN_INTERVAL_MS);
 
   // ★手動で「今すぐ取得→push」したい時の逃げ道
+  // force の時は「キャッシュ無視」で必ず取りに行く
   window.kbDiaryForcePush = () => {
     lastRunAt = 0;
     running = false;
