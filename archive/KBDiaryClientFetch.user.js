@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.11
+// @version      0.3.12
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 010
+// 011
 
 (() => {
   'use strict';
@@ -157,12 +157,22 @@
     });
   }
 
-  // "12/30 23:47"
+  // ====== パース（ヘブン / DTO で分岐） ======
+
+  // Heaven: "12/30 23:47"
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
-  // <span class="diary_time">12/30 23:47</span>
+  // Heaven: <span class="diary_time">12/30 23:47</span>
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
+
+  // DTO(www): <span class="regist_time">2月3日(火) 03:02</span>
+  const RE_REGIST_TIME_SPAN = /<span[^>]*class="[^"]*\bregist_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
+  // DTO text: "2月3日(火) 03:02" （曜日は任意）
+  const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*\([^)]+\))?\s*(\d{1,2}):(\d{2})/;
+
   // "2026年1月"
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
+  // "2026年"
+  const RE_YEAR = /(\d{4})年/;
 
   function extractYearMonth(text) {
     const m = (text || '').match(RE_YEARMON);
@@ -173,14 +183,23 @@
     return { y: null, mo: null };
   }
 
+  function extractYearOnly(text) {
+    const m = (text || '').match(RE_YEAR);
+    if (!m) return null;
+    const y = parseInt(m[1], 10);
+    if (y >= 1900 && y <= 2100) return y;
+    return null;
+  }
+
   function guessYear(headerY, headerMo, entryMo) {
     if (headerY == null) return null;
     if (headerMo == null) return headerY;
     if (headerMo === 1 && entryMo === 12) return headerY - 1;
+    if (headerMo === 12 && entryMo === 1) return headerY + 1;
     return headerY;
   }
 
-  function parseLatestTsUtcMsFromHtml(html) {
+  function parseLatestTsUtcMsFromHtmlHeaven(html) {
     if (!html) return { ts: null, err: 'empty_html' };
 
     const ym = extractYearMonth(html);
@@ -224,6 +243,60 @@
     return { ts: maxTs, err: '' };
   }
 
+  function parseLatestTsUtcMsFromHtmlDto(html) {
+    if (!html) return { ts: null, err: 'empty_html' };
+
+    const ym = extractYearMonth(html);
+    let headerY = ym.y;
+    const headerMo = ym.mo;
+
+    // DTOは「YYYY年」だけ出て月が無いケースもあるので、yearだけ拾う保険
+    if (headerY == null) {
+      headerY = extractYearOnly(html);
+    }
+
+    let maxTs = null;
+    let foundAny = false;
+
+    let mSpan;
+    while ((mSpan = RE_REGIST_TIME_SPAN.exec(html)) !== null) {
+      const inner = String(mSpan[1] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const m = inner.match(RE_JP_MMDD_HHMM);
+      if (!m) continue;
+
+      foundAny = true;
+
+      const mm = parseInt(m[1], 10);
+      const dd = parseInt(m[2], 10);
+      const hh = parseInt(m[3], 10);
+      const mi = parseInt(m[4], 10);
+
+      if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) {
+        continue;
+      }
+
+      let y = guessYear(headerY, headerMo, mm);
+      if (y == null) y = new Date().getFullYear();
+
+      const iso = `${y}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${String(mi).padStart(2, '0')}:00+09:00`;
+      const dt = new Date(iso);
+      const ts = dt.getTime();
+
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      if (maxTs == null || ts > maxTs) maxTs = ts;
+    }
+
+    if (!foundAny) return { ts: null, err: 'no_regist_time_found' };
+    if (maxTs == null) return { ts: null, err: 'regist_time_parse_failed' };
+
+    return { ts: maxTs, err: '' };
+  }
+
+  function isDtoHost(host) {
+    const h = String(host || '').toLowerCase();
+    return h === 'dto.jp' || h.endsWith('.dto.jp');
+  }
+
   function normalizeDiaryUrl(u) {
     const raw = String(u || '').trim();
     if (!raw) return '';
@@ -237,13 +310,26 @@
       return '';
     }
 
+    // path normalize
     url.pathname = url.pathname.replace(/\/+$/, '');
     if (!url.pathname.endsWith('/diary')) {
       url.pathname += '/diary';
     }
 
-    url.searchParams.delete('pcmode');
-    url.searchParams.set('spmode', 'pc');
+    // host別の正規化
+    if (isDtoHost(url.hostname)) {
+      // 取得は必ず www.dto.jp に寄せる（安定化）
+      url.protocol = 'https:';
+      url.hostname = 'www.dto.jp';
+
+      // 余計なパラメータは落とす（DTO側で不要＆挙動が変わる可能性）
+      try { url.searchParams.delete('pcmode'); } catch {}
+      try { url.searchParams.delete('spmode'); } catch {}
+    } else {
+      // Heaven: spmode=pc に寄せる（現状仕様）
+      try { url.searchParams.delete('pcmode'); } catch {}
+      try { url.searchParams.set('spmode', 'pc'); } catch {}
+    }
 
     return url.toString();
   }
@@ -312,6 +398,16 @@
     return res.ok;
   }
 
+  function parseLatestByUrlKind(diaryUrl, html) {
+    let host = '';
+    try { host = new URL(diaryUrl).hostname || ''; } catch { host = ''; }
+
+    if (isDtoHost(host)) {
+      return parseLatestTsUtcMsFromHtmlDto(html);
+    }
+    return parseLatestTsUtcMsFromHtmlHeaven(html);
+  }
+
   // ★変更点：forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
   async function workerFetchOne(task, forceNoCache) {
     const { id, diaryUrl } = task;
@@ -338,7 +434,7 @@
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
 
-    const parsed = parseLatestTsUtcMsFromHtml(r.text);
+    const parsed = parseLatestByUrlKind(diaryUrl, r.text);
     if (parsed.ts != null && !parsed.err) {
       setCached(diaryUrl, parsed.ts, '');
       return { id, latest_ts: parsed.ts, error: '', checked_at_ms: nowMs() };
@@ -369,9 +465,7 @@
     const now = nowMs();
     const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
 
-    // ★改善点（既存）：
     // 10分ガードは維持するが、「未キャッシュURLが含まれる」なら即実行を許可する。
-    // ★追加（今回）：
     // force のときは 10分ガード条件を無視して必ず実行する。
     if (!forceNoCache) {
       if (!intervalOk && !hasAnyUncached(slots)) {
