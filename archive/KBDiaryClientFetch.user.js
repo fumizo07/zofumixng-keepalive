@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.14
-// @description  Fetch diary latest timestamp in real browser and push to KB server
+// @version      0.3.15
+// @description  Fetch diary latest timestamp in real browser and push to KB server (debug phases)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
@@ -16,7 +16,60 @@
 (() => {
   'use strict';
 
+  // ============================================================
+  // Debug ring buffer (persistent)
+  // ============================================================
+  const DBG_RING_KEY = 'kb_diary_debug_ring_v1';
+  const DBG_RING_MAX = 120;
+
+  function dbgNow() { return Date.now(); }
+
+  function dbgLoadRing() {
+    try {
+      const raw = localStorage.getItem(DBG_RING_KEY);
+      if (!raw) return [];
+      const a = JSON.parse(raw);
+      return Array.isArray(a) ? a : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  function dbgSaveRing(a) {
+    try { localStorage.setItem(DBG_RING_KEY, JSON.stringify(a)); } catch (_) {}
+  }
+
+  function dbgPush(entry) {
+    const e = {
+      t: dbgNow(),
+      ...entry,
+    };
+    try { console.log('[kb-diary][DBG]', e); } catch (_) {}
+    try {
+      const ring = dbgLoadRing();
+      ring.push(e);
+      while (ring.length > DBG_RING_MAX) ring.shift();
+      dbgSaveRing(ring);
+    } catch (_) {}
+    try { window.kbDiaryDebugLast = e; } catch (_) {}
+    try {
+      window.dispatchEvent(new CustomEvent('kb-diary-debug', { detail: e }));
+    } catch (_) {}
+  }
+
+  function dbgPhase(phase, extra) {
+    dbgPush({ phase, ...(extra || {}) });
+  }
+
+  // Expose helper to read ring quickly
+  try {
+    window.kbDiaryDebugDump = () => {
+      try { return dbgLoadRing(); } catch (_) { return []; }
+    };
+  } catch (_) {}
+
+  // ============================================================
   // ====== 共有シークレット（合言葉）で自サイト判定 ======
+  // ============================================================
   const KB_ALLOW_META_NAME = 'kb-allow-konbankonban';
   const KB_ALLOW_LS_KEY = 'kb_allow_secret_v1';
   const KB_ALLOW_PROMPT_MSG = '合言葉を入力してください';
@@ -39,19 +92,25 @@
 
   function ensureAllowSecret() {
     const meta = getMetaSecret();
-    if (!meta) return false; // 自サイト以外は即終了（promptも出ない）
+    if (!meta) {
+      dbgPhase('guard:no_meta');
+      return false; // 自サイト以外は即終了
+    }
 
     let sec = getLocalSecret();
 
     if (sec && sec !== meta) {
+      dbgPhase('guard:ls_mismatch', { had: true });
       clearLocalSecret();
       sec = '';
     }
 
     if (!sec) {
+      dbgPhase('guard:prompt');
       const input = prompt(KB_ALLOW_PROMPT_MSG);
       sec = String(input || '').trim();
       if (!sec) {
+        dbgPhase('guard:prompt_cancel');
         clearLocalSecret();
         return false;
       }
@@ -59,20 +118,45 @@
     }
 
     const ok = (sec === meta);
+    dbgPhase('guard:ok_check', { ok });
     if (!ok) clearLocalSecret();
     return ok;
   }
 
-  if (!ensureAllowSecret()) return;
+  dbgPhase('boot');
 
+  if (!ensureAllowSecret()) {
+    dbgPhase('exit:guard_failed');
+    return;
+  }
+
+  // ============================================================
+  // GM availability
+  // ============================================================
+  const gmOk = (typeof GM_xmlhttpRequest === 'function');
+  dbgPhase('gm:check', { gmOk, gmType: typeof GM_xmlhttpRequest });
+
+  if (!gmOk) {
+    // Soul等で GM_xmlhttpRequest が無いと全処理が沈黙するので、即わかるようにする
+    console.warn('[kb-diary] GM_xmlhttpRequest is not available in this browser.');
+    window.kbDiaryForcePush = () => {
+      dbgPhase('force:blocked_no_gm');
+      alert('このブラウザは GM_xmlhttpRequest 非対応のため、日記の外部取得ができません。');
+    };
+    dbgPhase('exit:no_gm');
+    return;
+  }
+
+  // ============================================================
   // ====== 設定 ======
+  // ============================================================
   const PUSH_ENDPOINT = '/kb/api/diary_push';
   const CSRF_INIT_ENDPOINT = '/kb/api/csrf_init';
   const CSRF_COOKIE_NAME = 'kb_csrf';
   const CSRF_HEADER_NAME = 'X-KB-CSRF';
 
   const CACHE_TTL_MS = 10 * 60 * 1000;        // 10分（外部サイト取得キャッシュ）
-  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止：通常運用のみ）
+  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止）
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
 
@@ -121,25 +205,35 @@
   }
 
   async function ensureCsrf() {
-    if (getCookie(CSRF_COOKIE_NAME)) return true;
+    const existing = getCookie(CSRF_COOKIE_NAME);
+    dbgPhase('csrf:check', { has: !!existing });
+
+    if (existing) return true;
 
     try {
+      dbgPhase('csrf:init_fetch:start', { url: CSRF_INIT_ENDPOINT });
       const r = await fetch(CSRF_INIT_ENDPOINT, {
         method: 'GET',
         credentials: 'same-origin',
         headers: { 'Accept': 'application/json' },
         cache: 'no-store',
       });
+      dbgPhase('csrf:init_fetch:done', { ok: r.ok, status: r.status });
       if (!r.ok) return false;
-    } catch (_) {
+    } catch (e) {
+      dbgPhase('csrf:init_fetch:error', { msg: String(e && e.message ? e.message : e) });
       return false;
     }
 
-    return !!getCookie(CSRF_COOKIE_NAME);
+    const after = getCookie(CSRF_COOKIE_NAME);
+    dbgPhase('csrf:after', { has: !!after });
+    return !!after;
   }
 
   function gmGet(url) {
     return new Promise((resolve) => {
+      dbgPhase('gm:get:start', { url });
+
       GM_xmlhttpRequest({
         method: 'GET',
         url,
@@ -150,9 +244,18 @@
           'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
           'Upgrade-Insecure-Requests': '1',
         },
-        onload: (res) => resolve({ ok: true, status: res.status, text: res.responseText || '' }),
-        ontimeout: () => resolve({ ok: false, status: 0, text: '', error: 'timeout' }),
-        onerror: () => resolve({ ok: false, status: 0, text: '', error: 'network_error' }),
+        onload: (res) => {
+          dbgPhase('gm:get:done', { url, status: res.status, len: (res.responseText || '').length });
+          resolve({ ok: true, status: res.status, text: res.responseText || '' });
+        },
+        ontimeout: () => {
+          dbgPhase('gm:get:timeout', { url });
+          resolve({ ok: false, status: 0, text: '', error: 'timeout' });
+        },
+        onerror: () => {
+          dbgPhase('gm:get:error', { url });
+          resolve({ ok: false, status: 0, text: '', error: 'network_error' });
+        },
       });
     });
   }
@@ -166,12 +269,10 @@
 
   // DTO(www): <span class="regist_time">2月3日(火) 03:02</span>
   const RE_REGIST_TIME_SPAN = /<span[^>]*class="[^"]*\bregist_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
-  // DTO text: "2月3日(火) 03:02" （曜日は任意）
+  // DTO text: "2月3日(火) 03:02"
   const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*\([^)]+\))?\s*(\d{1,2}):(\d{2})/;
 
-  // "2026年1月"
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
-  // "2026年"
   const RE_YEAR = /(\d{4})年/;
 
   function extractYearMonth(text) {
@@ -239,7 +340,6 @@
 
     if (!foundAny) return { ts: null, err: 'no_diary_time_found' };
     if (maxTs == null) return { ts: null, err: 'diary_time_parse_failed' };
-
     return { ts: maxTs, err: '' };
   }
 
@@ -250,7 +350,6 @@
     let headerY = ym.y;
     const headerMo = ym.mo;
 
-    // DTOは「YYYY年」だけ出て月が無いケースもあるので、yearだけ拾う保険
     if (headerY == null) {
       headerY = extractYearOnly(html);
     }
@@ -288,7 +387,6 @@
 
     if (!foundAny) return { ts: null, err: 'no_regist_time_found' };
     if (maxTs == null) return { ts: null, err: 'regist_time_parse_failed' };
-
     return { ts: maxTs, err: '' };
   }
 
@@ -310,23 +408,17 @@
       return '';
     }
 
-    // path normalize
     url.pathname = url.pathname.replace(/\/+$/, '');
     if (!url.pathname.endsWith('/diary')) {
       url.pathname += '/diary';
     }
 
-    // host別の正規化
     if (isDtoHost(url.hostname)) {
-      // 取得は必ず www.dto.jp に寄せる（安定化）
       url.protocol = 'https:';
       url.hostname = 'www.dto.jp';
-
-      // 余計なパラメータは落とす（DTO側で不要＆挙動が変わる可能性）
       try { url.searchParams.delete('pcmode'); } catch {}
       try { url.searchParams.delete('spmode'); } catch {}
     } else {
-      // Heaven: spmode=pc に寄せる（現状仕様）
       try { url.searchParams.delete('pcmode'); } catch {}
       try { url.searchParams.set('spmode', 'pc'); } catch {}
     }
@@ -376,28 +468,6 @@
     try { window.dispatchEvent(new CustomEvent('kb-diary-pushed', { detail: { ids } })); } catch {}
   }
 
-  async function pushResults(batch) {
-    const okCsrf = await ensureCsrf();
-    if (!okCsrf) return false;
-
-    const csrf = getCookie(CSRF_COOKIE_NAME);
-    if (!csrf) return false;
-
-    const res = await fetch(PUSH_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        [CSRF_HEADER_NAME]: csrf,
-      },
-      body: JSON.stringify({ items: batch }),
-      credentials: 'same-origin',
-      keepalive: true,
-    });
-
-    try { await res.json(); } catch {}
-    return res.ok;
-  }
-
   function parseLatestByUrlKind(diaryUrl, html) {
     let host = '';
     try { host = new URL(diaryUrl).hostname || ''; } catch { host = ''; }
@@ -408,36 +478,94 @@
     return parseLatestTsUtcMsFromHtmlHeaven(html);
   }
 
+  async function pushResults(batch) {
+    dbgPhase('push:start', { items: Array.isArray(batch) ? batch.length : -1 });
+
+    const okCsrf = await ensureCsrf();
+    dbgPhase('push:csrf_ready', { ok: okCsrf });
+
+    if (!okCsrf) {
+      dbgPhase('push:abort_no_csrf');
+      return false;
+    }
+
+    const csrf = getCookie(CSRF_COOKIE_NAME);
+    dbgPhase('push:csrf_cookie', { has: !!csrf });
+
+    if (!csrf) {
+      dbgPhase('push:abort_cookie_empty');
+      return false;
+    }
+
+    try {
+      dbgPhase('push:fetch:start', { url: PUSH_ENDPOINT });
+
+      const res = await fetch(PUSH_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          [CSRF_HEADER_NAME]: csrf,
+        },
+        body: JSON.stringify({ items: batch }),
+        credentials: 'same-origin',
+        keepalive: true,
+      });
+
+      let j = null;
+      try { j = await res.json(); } catch (_) {}
+
+      dbgPhase('push:fetch:done', {
+        ok: res.ok,
+        status: res.status,
+        hasJson: !!j,
+      });
+
+      return res.ok;
+    } catch (e) {
+      dbgPhase('push:fetch:error', { msg: String(e && e.message ? e.message : e) });
+      return false;
+    }
+  }
+
   // ★forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
   async function workerFetchOne(task, forceNoCache) {
     const { id, diaryUrl } = task;
 
+    dbgPhase('worker:start', { id, forceNoCache });
+
     if (!forceNoCache) {
       const c = getCached(diaryUrl);
       if (c) {
+        dbgPhase('worker:cache_hit', { id });
         return { id, latest_ts: c.latestTs, error: c.error || '', checked_at_ms: nowMs() };
       }
     }
 
-    // 通常運用だけ軽いジッター（forceは最速を優先）
-    if (!forceNoCache) {
-      await sleep(250 + Math.floor(Math.random() * 350));
-    }
+    await sleep(250 + Math.floor(Math.random() * 350));
 
     const r = await gmGet(diaryUrl);
     if (!r.ok) {
       const err = r.error || 'gm_error';
-      setCached(diaryUrl, null, err); // force時も更新して次回安定
+      dbgPhase('worker:gm_fail', { id, err });
+      setCached(diaryUrl, null, err);
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
 
     if ((r.status || 0) >= 400) {
       const err = `http_${r.status || 0}`;
+      dbgPhase('worker:http_fail', { id, err });
       setCached(diaryUrl, null, err);
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
 
     const parsed = parseLatestByUrlKind(diaryUrl, r.text);
+    dbgPhase('worker:parsed', {
+      id,
+      ok: (parsed.ts != null && !parsed.err),
+      err: parsed.err || '',
+      ts: parsed.ts != null ? String(parsed.ts) : '',
+    });
+
     if (parsed.ts != null && !parsed.err) {
       setCached(diaryUrl, parsed.ts, '');
       return { id, latest_ts: parsed.ts, error: '', checked_at_ms: nowMs() };
@@ -447,11 +575,12 @@
     }
   }
 
+  // ============================================================
+  // Runner
+  // ============================================================
   let running = false;
-  let lastRunAt = 0;
-
-  // ★最強ボタン用：forceを“予約”できるようにする（押したのに無反応を防ぐ）
   let forceQueued = false;
+  let lastRunAt = 0;
 
   function hasAnyUncached(slots) {
     for (const s of slots) {
@@ -461,40 +590,42 @@
   }
 
   async function runOnce(reason) {
-    const forceNoCache = (String(reason || '') === 'force');
-
-    // ★forceは実行中でも「予約」して、終わった直後に必ずもう一度回す
     if (running) {
-      if (forceNoCache) {
-        forceQueued = true;
-      }
+      dbgPhase('run:skip_already_running', { reason });
       return;
     }
 
     const slots = collectSlots();
-    if (!slots.length) return;
+    dbgPhase('run:slots', { reason, count: slots.length });
+
+    if (!slots.length) {
+      dbgPhase('run:abort_no_slots', { reason });
+      return;
+    }
+
+    const forceNoCache = (String(reason || '') === 'force');
 
     const now = nowMs();
     const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
 
-    // 通常運用のみ 10分ガード（forceは完全無視）
     if (!forceNoCache) {
       if (!intervalOk && !hasAnyUncached(slots)) {
+        dbgPhase('run:guard_interval_block', { sinceMs: (now - lastRunAt) });
         return;
       }
     }
 
     running = true;
+    lastRunAt = now;
 
-    // ★通常運用だけ lastRunAt を更新（forceは更新しない＝連打しても毎回最強）
-    if (!forceNoCache) {
-      lastRunAt = now;
-    }
+    dbgPhase('run:start', { reason, forceNoCache });
 
     try {
       const tasks = slots.map(s => ({ id: s.id, diaryUrl: s.diaryUrl }));
       const results = [];
       let idx = 0;
+
+      dbgPhase('run:workers_start', { concurrency: CONCURRENCY });
 
       const workers = Array.from({ length: CONCURRENCY }, async () => {
         while (idx < tasks.length) {
@@ -506,25 +637,36 @@
 
       await Promise.all(workers);
 
+      dbgPhase('run:fetched', {
+        total: results.length,
+        errors: results.filter(x => !!x.error).length,
+      });
+
       const ok = await pushResults(results);
-      if (ok) notifyPushed(results.map(x => x.id));
-    } catch (_) {
-      // 失敗しても暴走しない
+      dbgPhase('run:pushed', { ok });
+
+      if (ok) {
+        notifyPushed(results.map(x => x.id));
+        dbgPhase('run:notify_pushed', { ids: results.map(x => x.id).slice(0, 8).join(',') });
+      }
+    } catch (e) {
+      dbgPhase('run:error', { msg: String(e && e.message ? e.message : e) });
     } finally {
       running = false;
+      dbgPhase('run:done', { reason });
 
-      // ★forceが予約されていたら、直ちにもう一度forceを実行（最強保証）
+      // もし「走行中にforceが来た」なら、終わった直後に必ず1回だけforceを流す
       if (forceQueued) {
         forceQueued = false;
-        // 直列化のため tick を挟む
-        setTimeout(() => {
-          runOnce('force').catch(() => {});
-        }, 0);
+        dbgPhase('run:force_dequeued');
+        runOnce('force').catch(() => {});
       }
     }
   }
 
-  // ===== 起動＆監視（slot集合が変わった時だけ走る） =====
+  // ============================================================
+  // Start & watch
+  // ============================================================
   let lastSig = '';
   let timer = null;
 
@@ -541,6 +683,7 @@
     if (!sig) return;
     if (sig === lastSig) return;
     lastSig = sig;
+    dbgPhase('slots:changed', { count: slots.length });
     schedule('slots_changed');
   }
 
@@ -565,37 +708,22 @@
     runOnce('interval').catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
-  // ★手動で「今すぐ取得→push」したい時の最強ボタン
-  // - ガード完全無視
-  // - キャッシュ無視
-  // - 実行中でも予約して“必ず通す”
+  // ============================================================
+  // ★最強ボタン（force）：ガード無視・キャッシュ無視・必ず走らせる
+  // ============================================================
   window.kbDiaryForcePush = () => {
+    dbgPhase('force:called', { running, lastRunAgoMs: lastRunAt ? (nowMs() - lastRunAt) : -1 });
+
     // すでに走っているなら予約だけ（終わった直後にforceが必ず走る）
     if (running) {
       forceQueued = true;
+      dbgPhase('force:queued');
       return;
     }
+
+    // forceはクールダウン無視
+    lastRunAt = 0;
     runOnce('force').catch(() => {});
   };
-
-  // ★最強ボタン：Userscriptがボタンを“直接”拾う（kb.js依存を排除）
-  // - DOM差し替え/再描画でも確実に拾うためイベント委譲
-  // - クリックで必ず force 実行（running中ならforceQueuedに積まれて、終わり次第走る）
-  (function bindForceButtonByDelegation() {
-    if (window.__kbDiaryForceBtnDelegationApplied === "1") return;
-    window.__kbDiaryForceBtnDelegationApplied = "1";
-
-    document.addEventListener("click", (e) => {
-      const btn = e.target && e.target.closest ? e.target.closest("#kbDiaryBtnForce") : null;
-      if (!btn) return;
-
-      // 「押したのに何も起きない」を潰すため、ここで確実にログを残す
-      try { console.log("[kb-diary][userscript] force button captured", Date.now()); } catch (_) {}
-
-      // 既存の最強ルートへ
-      try { window.kbDiaryForcePush(); } catch (_) {}
-    }, true);
-  })();
-
 
 })();
