@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.12
+// @version      0.3.13
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 011
+// 012
 
 (() => {
   'use strict';
@@ -72,7 +72,6 @@
     return;
   }
 
-
   // ====== 設定 ======
   const PUSH_ENDPOINT = '/kb/api/diary_push';
   const CSRF_INIT_ENDPOINT = '/kb/api/csrf_init';
@@ -80,7 +79,7 @@
   const CSRF_HEADER_NAME = 'X-KB-CSRF';
 
   const CACHE_TTL_MS = 10 * 60 * 1000;        // 10分（外部サイト取得キャッシュ）
-  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止）
+  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止：通常運用のみ）
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
 
@@ -416,7 +415,7 @@
     return parseLatestTsUtcMsFromHtmlHeaven(html);
   }
 
-  // ★変更点：forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
+  // ★forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
   async function workerFetchOne(task, forceNoCache) {
     const { id, diaryUrl } = task;
 
@@ -427,7 +426,10 @@
       }
     }
 
-    await sleep(250 + Math.floor(Math.random() * 350));
+    // 通常運用だけ軽いジッター（forceは最速を優先）
+    if (!forceNoCache) {
+      await sleep(250 + Math.floor(Math.random() * 350));
+    }
 
     const r = await gmGet(diaryUrl);
     if (!r.ok) {
@@ -455,6 +457,9 @@
   let running = false;
   let lastRunAt = 0;
 
+  // ★最強ボタン用：forceを“予約”できるようにする（押したのに無反応を防ぐ）
+  let forceQueued = false;
+
   function hasAnyUncached(slots) {
     for (const s of slots) {
       if (!getCached(s.diaryUrl)) return true;
@@ -463,18 +468,23 @@
   }
 
   async function runOnce(reason) {
-    if (running) return;
+    const forceNoCache = (String(reason || '') === 'force');
+
+    // ★forceは実行中でも「予約」して、終わった直後に必ずもう一度回す
+    if (running) {
+      if (forceNoCache) {
+        forceQueued = true;
+      }
+      return;
+    }
 
     const slots = collectSlots();
     if (!slots.length) return;
 
-    const forceNoCache = (String(reason || '') === 'force');
-
     const now = nowMs();
     const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
 
-    // 10分ガードは維持するが、「未キャッシュURLが含まれる」なら即実行を許可する。
-    // force のときは 10分ガード条件を無視して必ず実行する。
+    // 通常運用のみ 10分ガード（forceは完全無視）
     if (!forceNoCache) {
       if (!intervalOk && !hasAnyUncached(slots)) {
         return;
@@ -482,7 +492,11 @@
     }
 
     running = true;
-    lastRunAt = now;
+
+    // ★通常運用だけ lastRunAt を更新（forceは更新しない＝連打しても毎回最強）
+    if (!forceNoCache) {
+      lastRunAt = now;
+    }
 
     try {
       const tasks = slots.map(s => ({ id: s.id, diaryUrl: s.diaryUrl }));
@@ -505,6 +519,15 @@
       // 失敗しても暴走しない
     } finally {
       running = false;
+
+      // ★forceが予約されていたら、直ちにもう一度forceを実行（最強保証）
+      if (forceQueued) {
+        forceQueued = false;
+        // 直列化のため tick を挟む
+        setTimeout(() => {
+          runOnce('force').catch(() => {});
+        }, 0);
+      }
     }
   }
 
@@ -549,11 +572,16 @@
     runOnce('interval').catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
-  // ★手動で「今すぐ取得→push」したい時の逃げ道
-  // force の時は「キャッシュ無視」で必ず取りに行く
+  // ★手動で「今すぐ取得→push」したい時の最強ボタン
+  // - ガード完全無視
+  // - キャッシュ無視
+  // - 実行中でも予約して“必ず通す”
   window.kbDiaryForcePush = () => {
-    lastRunAt = 0;
-    running = false;
+    // すでに走っているなら予約だけ（終わった直後にforceが必ず走る）
+    if (running) {
+      forceQueued = true;
+      return;
+    }
     runOnce('force').catch(() => {});
   };
 
