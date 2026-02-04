@@ -65,13 +65,6 @@
 
   if (!ensureAllowSecret()) return;
 
-  // ====== Soul等で GM_xmlhttpRequest が無いと全処理が沈黙するので、即わかるようにする
-  if (typeof GM_xmlhttpRequest !== 'function') {
-    console.warn('[kb-diary] GM_xmlhttpRequest is not available in this browser.');
-    window.kbDiaryForcePush = () => alert('このブラウザは GM_xmlhttpRequest 非対応のため、日記の外部取得ができません。');
-    return;
-  }
-
   // ====== 設定 ======
   const PUSH_ENDPOINT = '/kb/api/diary_push';
   const CSRF_INIT_ENDPOINT = '/kb/api/csrf_init';
