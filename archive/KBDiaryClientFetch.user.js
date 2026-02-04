@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.13
+// @version      0.3.12
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 012
+// 011
 
 (() => {
   'use strict';
@@ -20,6 +20,50 @@
   const KB_ALLOW_META_NAME = 'kb-allow-konbankonban';
   const KB_ALLOW_LS_KEY = 'kb_allow_secret_v1';
   const KB_ALLOW_PROMPT_MSG = '合言葉を入力してください';
+
+  function getLocalSecret() {
+    try { return String(localStorage.getItem(KB_ALLOW_LS_KEY) || '').trim(); } catch { return ''; }
+  }
+  function setLocalSecret(v) {
+    try { localStorage.setItem(KB_ALLOW_LS_KEY, String(v || '').trim()); } catch {}
+  }
+  function clearLocalSecret() {
+    try { localStorage.removeItem(KB_ALLOW_LS_KEY); } catch {}
+  }
+
+  function getMetaSecret() {
+    const el = document.querySelector(`meta[name="${KB_ALLOW_META_NAME}"]`);
+    if (!el) return '';
+    return String(el.getAttribute('content') || '').trim();
+  }
+
+  function ensureAllowSecret() {
+    const meta = getMetaSecret();
+    if (!meta) return false; // 自サイト以外は即終了（promptも出ない）
+
+    let sec = getLocalSecret();
+
+    if (sec && sec !== meta) {
+      clearLocalSecret();
+      sec = '';
+    }
+
+    if (!sec) {
+      const input = prompt(KB_ALLOW_PROMPT_MSG);
+      sec = String(input || '').trim();
+      if (!sec) {
+        clearLocalSecret();
+        return false;
+      }
+      setLocalSecret(sec);
+    }
+
+    const ok = (sec === meta);
+    if (!ok) clearLocalSecret();
+    return ok;
+  }
+
+  if (!ensureAllowSecret()) return;
 
   // ====== 設定 ======
   const PUSH_ENDPOINT = '/kb/api/diary_push';
@@ -41,51 +85,6 @@
   }
   function lsSet(key, val) {
     try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-  }
-
-  function getLocalSecret() {
-    try { return String(localStorage.getItem(KB_ALLOW_LS_KEY) || '').trim(); } catch { return ''; }
-  }
-  function setLocalSecret(v) {
-    try { localStorage.setItem(KB_ALLOW_LS_KEY, String(v || '').trim()); } catch {}
-  }
-  function clearLocalSecret() {
-    try { localStorage.removeItem(KB_ALLOW_LS_KEY); } catch {}
-  }
-
-  function getMetaSecret() {
-    const el = document.querySelector(`meta[name="${KB_ALLOW_META_NAME}"]`);
-    if (!el) return '';
-    return String(el.getAttribute('content') || '').trim();
-  }
-
-  // ★重要：promptは「ユーザー操作の文脈」でのみ出す（スマホでブロックされやすいので）
-  // interactive=false の時は prompt を絶対に出さない
-  function ensureAllowSecret(interactive) {
-    const meta = getMetaSecret();
-    if (!meta) return false; // 自サイト以外は即終了（promptも出ない）
-
-    let sec = getLocalSecret();
-
-    if (sec && sec !== meta) {
-      clearLocalSecret();
-      sec = '';
-    }
-
-    if (!sec) {
-      if (!interactive) return false; // ★ここがポイント：勝手にpromptしない
-      const input = prompt(KB_ALLOW_PROMPT_MSG);
-      sec = String(input || '').trim();
-      if (!sec) {
-        clearLocalSecret();
-        return false;
-      }
-      setLocalSecret(sec);
-    }
-
-    const ok = (sec === meta);
-    if (!ok) clearLocalSecret();
-    return ok;
   }
 
   function cacheKeyForUrl(url) {
@@ -251,6 +250,7 @@
     let headerY = ym.y;
     const headerMo = ym.mo;
 
+    // DTOは「YYYY年」だけ出て月が無いケースもあるので、yearだけ拾う保険
     if (headerY == null) {
       headerY = extractYearOnly(html);
     }
@@ -310,17 +310,23 @@
       return '';
     }
 
+    // path normalize
     url.pathname = url.pathname.replace(/\/+$/, '');
     if (!url.pathname.endsWith('/diary')) {
       url.pathname += '/diary';
     }
 
+    // host別の正規化
     if (isDtoHost(url.hostname)) {
+      // 取得は必ず www.dto.jp に寄せる（安定化）
       url.protocol = 'https:';
       url.hostname = 'www.dto.jp';
+
+      // 余計なパラメータは落とす（DTO側で不要＆挙動が変わる可能性）
       try { url.searchParams.delete('pcmode'); } catch {}
       try { url.searchParams.delete('spmode'); } catch {}
     } else {
+      // Heaven: spmode=pc に寄せる（現状仕様）
       try { url.searchParams.delete('pcmode'); } catch {}
       try { url.searchParams.set('spmode', 'pc'); } catch {}
     }
@@ -386,7 +392,6 @@
       body: JSON.stringify({ items: batch }),
       credentials: 'same-origin',
       keepalive: true,
-      cache: 'no-store',
     });
 
     try { await res.json(); } catch {}
@@ -403,6 +408,7 @@
     return parseLatestTsUtcMsFromHtmlHeaven(html);
   }
 
+  // ★変更点：forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
   async function workerFetchOne(task, forceNoCache) {
     const { id, diaryUrl } = task;
 
@@ -418,7 +424,7 @@
     const r = await gmGet(diaryUrl);
     if (!r.ok) {
       const err = r.error || 'gm_error';
-      setCached(diaryUrl, null, err);
+      setCached(diaryUrl, null, err); // force時も更新して次回安定
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
 
@@ -448,10 +454,7 @@
     return false;
   }
 
-  async function runOnce(reason, interactiveAllow) {
-    // ★ここで許可チェック（interactiveAllow=falseならpromptしない）
-    if (!ensureAllowSecret(!!interactiveAllow)) return;
-
+  async function runOnce(reason) {
     if (running) return;
 
     const slots = collectSlots();
@@ -462,6 +465,8 @@
     const now = nowMs();
     const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
 
+    // 10分ガードは維持するが、「未キャッシュURLが含まれる」なら即実行を許可する。
+    // force のときは 10分ガード条件を無視して必ず実行する。
     if (!forceNoCache) {
       if (!intervalOk && !hasAnyUncached(slots)) {
         return;
@@ -502,14 +507,11 @@
   function schedule(reason) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      runOnce(reason, false).catch(() => {});
+      runOnce(reason).catch(() => {});
     }, 600);
   }
 
   function checkSlotsChangedAndSchedule() {
-    // 許可がまだなら何もしない（promptも出さない）
-    if (!ensureAllowSecret(false)) return;
-
     const slots = collectSlots();
     const sig = computeSlotsSignature(slots);
     if (!sig) return;
@@ -518,13 +520,9 @@
     schedule('slots_changed');
   }
 
-  // 初回：許可が取れてる場合だけ自動開始
   checkSlotsChangedAndSchedule();
 
   const mo = new MutationObserver((mutations) => {
-    // 許可がまだなら何もしない
-    if (!ensureAllowSecret(false)) return;
-
     let touched = false;
     for (const m of mutations) {
       if (m.type !== 'childList') continue;
@@ -540,15 +538,15 @@
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
   setInterval(() => {
-    runOnce('interval', false).catch(() => {});
+    runOnce('interval').catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
   // ★手動で「今すぐ取得→push」したい時の逃げ道
-  // ここは「ユーザー操作」から呼ばれる前提なので interactiveAllow=true
+  // force の時は「キャッシュ無視」で必ず取りに行く
   window.kbDiaryForcePush = () => {
     lastRunAt = 0;
     running = false;
-    runOnce('force', true).catch(() => {});
+    runOnce('force').catch(() => {});
   };
 
 })();
