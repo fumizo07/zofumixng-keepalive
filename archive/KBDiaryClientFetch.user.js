@@ -4,7 +4,6 @@
 // @version      0.3.13
 // @description  Fetch diary latest timestamp in real browser and push to KB server
 // @match        https://*/kb*
-// @match        https://*/kb
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
 // @connect      cityheaven.net
