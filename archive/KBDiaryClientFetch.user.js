@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.16
+// @version      0.3.17
 // @description  Fetch diary latest timestamp in real browser and push to KB server (debug phases, hard-force epoch)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 013
+// 014
 
 (() => {
   'use strict';
@@ -254,7 +254,6 @@
   }
 
   // ====== パース（ヘブン / DTO で分岐） ======
-
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 
@@ -503,7 +502,9 @@
         },
         body: JSON.stringify({ items: batch }),
         credentials: 'same-origin',
-        keepalive: true,
+        // ★デバッグでは keepalive を切る（Network観測を安定させる）
+        // keepalive: true,
+        cache: 'no-store',
       });
 
       let j = null;
@@ -523,11 +524,9 @@
     }
   }
 
-  // ★forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
   async function workerFetchOne(task, forceNoCache, epoch) {
     const { id, diaryUrl } = task;
 
-    // ★強制中断：epochが古いrunはここで終了扱い
     if (epoch !== activeEpoch) {
       dbgPhase('worker:abort_stale_epoch', { id, epoch, activeEpoch });
       return { id, latest_ts: null, error: 'stale_epoch', checked_at_ms: nowMs() };
@@ -545,7 +544,6 @@
 
     await sleep(250 + Math.floor(Math.random() * 350));
 
-    // もう一回チェック（sleepの間にforceでepochが切り替わることがある）
     if (epoch !== activeEpoch) {
       dbgPhase('worker:abort_stale_epoch_after_sleep', { id, epoch, activeEpoch });
       return { id, latest_ts: null, error: 'stale_epoch', checked_at_ms: nowMs() };
@@ -636,7 +634,6 @@
       }
     }
 
-    // ★epochが古いrunは開始直後に弾く
     if (epoch !== activeEpoch) {
       dbgPhase('run:abort_stale_epoch_before_start', { reason, epoch, activeEpoch });
       return;
@@ -656,12 +653,10 @@
 
       const workers = Array.from({ length: CONCURRENCY }, async () => {
         while (true) {
-          // ★forceでepochが切り替わったらこのworkerは即終了
           if (epoch !== activeEpoch) {
             dbgPhase('worker:loop_abort_stale_epoch', { epoch, activeEpoch });
             break;
           }
-
           if (idx >= tasks.length) break;
 
           const t = tasks[idx++];
@@ -679,7 +674,6 @@
         activeEpoch,
       });
 
-      // ★epochが古いrunはpushしない
       if (epoch !== activeEpoch) {
         dbgPhase('run:skip_push_stale_epoch', { epoch, activeEpoch });
         return;
@@ -695,7 +689,6 @@
     } catch (e) {
       dbgPhase('run:error', { msg: String(e && e.message ? e.message : e), epoch });
     } finally {
-      // ★epochが一致しているrunだけがrunningを戻す（古いrunが新しいrunを邪魔しない）
       if (epoch === activeEpoch) {
         running = false;
       }
@@ -712,7 +705,6 @@
   function schedule(reason) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      // scheduleは「最新epoch」で走る
       runOnce(reason, { epoch: activeEpoch, ignoreRunning: false }).catch(() => {});
     }, 600);
   }
@@ -727,7 +719,6 @@
     schedule('slots_changed');
   }
 
-  // 初期epoch
   nextEpoch();
   checkSlotsChangedAndSchedule();
 
@@ -747,14 +738,26 @@
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
   setInterval(() => {
-    // intervalは「今のepoch」で通常実行（running中はスキップ）
     runOnce('interval', { epoch: activeEpoch, ignoreRunning: false }).catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
   // ============================================================
   // ★最強ボタン（force）：running無視・キャッシュ無視・必ず push まで走らせる
+  //   ただし「二重発火」は epoch を壊して push を消すのでデバウンスする
   // ============================================================
+  let lastForceClickAt = 0;
+  const FORCE_DEBOUNCE_MS = 500;
+
   window.kbDiaryForcePush = () => {
+    const now = nowMs();
+
+    // ★クリック1回なのに2回呼ばれている状況を潰す（inline + 既存listener等）
+    if (now - lastForceClickAt < FORCE_DEBOUNCE_MS) {
+      dbgPhase('force:debounced', { deltaMs: (now - lastForceClickAt) });
+      return;
+    }
+    lastForceClickAt = now;
+
     const newEp = nextEpoch();
 
     dbgPhase('force:hard_called', {
@@ -763,10 +766,8 @@
       newEpoch: newEp,
     });
 
-    // ★クールダウン等を完全無視したいので lastRunAt を無効化
     lastRunAt = 0;
 
-    // ★ここが「最強」：running中でも即、別世代で開始（旧runはpushしない）
     runOnce('force', { epoch: newEp, ignoreRunning: true, forceNoCache: true }).catch(() => {});
   };
 
