@@ -1,20 +1,26 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.18
-// @description  Fetch diary latest timestamp in real browser and push to KB server (clean, epoch force, minimal signals)
+// @version      0.3.19
+// @description  Fetch diary latest timestamp in real browser and push to KB server (clean, epoch force, minimal signals; unsafeWindow bridge)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      www.cityheaven.net
 // @connect      cityheaven.net
 // @connect      www.dto.jp
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 015
+// 016
 
 (() => {
   "use strict";
+
+  // ============================================================
+  // Bridge: page window (Tampermonkey sandbox対策)
+  // ============================================================
+  const W = (typeof unsafeWindow !== "undefined" && unsafeWindow) ? unsafeWindow : window;
 
   // ============================================================
   // Guard (shared secret)
@@ -69,7 +75,8 @@
   // ============================================================
   const gmOk = (typeof GM_xmlhttpRequest === "function");
   if (!gmOk) {
-    window.kbDiaryForcePush = () => {
+    // 公開先は必ず W（ページ側window）
+    W.kbDiaryForcePush = () => {
       alert("このブラウザは GM_xmlhttpRequest 非対応のため、日記の外部取得ができません。");
     };
     return;
@@ -96,8 +103,8 @@
   // ============================================================
   function emit(stage, detail) {
     const payload = { stage, at: nowMs(), ...(detail || {}) };
-    try { window.__kbDiaryLastSignal = payload; } catch (_) {}
-    try { window.dispatchEvent(new CustomEvent("kb-diary-signal", { detail: payload })); } catch (_) {}
+    try { W.__kbDiaryLastSignal = payload; } catch (_) {}
+    try { W.dispatchEvent(new W.CustomEvent("kb-diary-signal", { detail: payload })); } catch (_) {}
   }
 
   // ============================================================
@@ -534,7 +541,7 @@
       const pushRes = await pushResults(results, epoch);
       if (pushRes.ok) {
         try {
-          window.dispatchEvent(new CustomEvent("kb-diary-pushed", { detail: { ids: results.map((x) => x.id) } }));
+          W.dispatchEvent(new W.CustomEvent("kb-diary-pushed", { detail: { ids: results.map((x) => x.id) } }));
         } catch (_) {}
       }
     } finally {
@@ -596,7 +603,7 @@
   let lastForceClickAt = 0;
   const FORCE_DEBOUNCE_MS = 500;
 
-  window.kbDiaryForcePush = () => {
+  W.kbDiaryForcePush = () => {
     const now = nowMs();
     if (now - lastForceClickAt < FORCE_DEBOUNCE_MS) return;
     lastForceClickAt = now;
