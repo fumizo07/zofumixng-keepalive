@@ -585,4 +585,24 @@
     runOnce('force').catch(() => {});
   };
 
+  // ★最強ボタン：Userscriptがボタンを“直接”拾う（kb.js依存を排除）
+  // - DOM差し替え/再描画でも確実に拾うためイベント委譲
+  // - クリックで必ず force 実行（running中ならforceQueuedに積まれて、終わり次第走る）
+  (function bindForceButtonByDelegation() {
+    if (window.__kbDiaryForceBtnDelegationApplied === "1") return;
+    window.__kbDiaryForceBtnDelegationApplied = "1";
+
+    document.addEventListener("click", (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest("#kbDiaryBtnForce") : null;
+      if (!btn) return;
+
+      // 「押したのに何も起きない」を潰すため、ここで確実にログを残す
+      try { console.log("[kb-diary][userscript] force button captured", Date.now()); } catch (_) {}
+
+      // 既存の最強ルートへ
+      try { window.kbDiaryForcePush(); } catch (_) {}
+    }, true);
+  })();
+
+
 })();
