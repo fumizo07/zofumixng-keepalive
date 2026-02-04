@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.15
-// @description  Fetch diary latest timestamp in real browser and push to KB server (debug phases)
+// @version      0.3.16
+// @description  Fetch diary latest timestamp in real browser and push to KB server (debug phases, hard-force epoch)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 012
+// 013
 
 (() => {
   'use strict';
@@ -39,10 +39,7 @@
   }
 
   function dbgPush(entry) {
-    const e = {
-      t: dbgNow(),
-      ...entry,
-    };
+    const e = { t: dbgNow(), ...entry };
     try { console.log('[kb-diary][DBG]', e); } catch (_) {}
     try {
       const ring = dbgLoadRing();
@@ -51,16 +48,13 @@
       dbgSaveRing(ring);
     } catch (_) {}
     try { window.kbDiaryDebugLast = e; } catch (_) {}
-    try {
-      window.dispatchEvent(new CustomEvent('kb-diary-debug', { detail: e }));
-    } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent('kb-diary-debug', { detail: e })); } catch (_) {}
   }
 
   function dbgPhase(phase, extra) {
     dbgPush({ phase, ...(extra || {}) });
   }
 
-  // Expose helper to read ring quickly
   try {
     window.kbDiaryDebugDump = () => {
       try { return dbgLoadRing(); } catch (_) { return []; }
@@ -94,7 +88,7 @@
     const meta = getMetaSecret();
     if (!meta) {
       dbgPhase('guard:no_meta');
-      return false; // 自サイト以外は即終了
+      return false;
     }
 
     let sec = getLocalSecret();
@@ -137,7 +131,6 @@
   dbgPhase('gm:check', { gmOk, gmType: typeof GM_xmlhttpRequest });
 
   if (!gmOk) {
-    // Soul等で GM_xmlhttpRequest が無いと全処理が沈黙するので、即わかるようにする
     console.warn('[kb-diary] GM_xmlhttpRequest is not available in this browser.');
     window.kbDiaryForcePush = () => {
       dbgPhase('force:blocked_no_gm');
@@ -156,7 +149,7 @@
   const CSRF_HEADER_NAME = 'X-KB-CSRF';
 
   const CACHE_TTL_MS = 10 * 60 * 1000;        // 10分（外部サイト取得キャッシュ）
-  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（暴走防止）
+  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分（interval等の暴走防止）
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
 
@@ -262,14 +255,10 @@
 
   // ====== パース（ヘブン / DTO で分岐） ======
 
-  // Heaven: "12/30 23:47"
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
-  // Heaven: <span class="diary_time">12/30 23:47</span>
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 
-  // DTO(www): <span class="regist_time">2月3日(火) 03:02</span>
   const RE_REGIST_TIME_SPAN = /<span[^>]*class="[^"]*\bregist_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
-  // DTO text: "2月3日(火) 03:02"
   const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*\([^)]+\))?\s*(\d{1,2}):(\d{2})/;
 
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
@@ -478,27 +467,33 @@
     return parseLatestTsUtcMsFromHtmlHeaven(html);
   }
 
-  async function pushResults(batch) {
-    dbgPhase('push:start', { items: Array.isArray(batch) ? batch.length : -1 });
+  async function pushResults(batch, epoch) {
+    // ★強制中断：epochが古いrunはpushさせない
+    if (epoch !== activeEpoch) {
+      dbgPhase('push:skip_stale_epoch', { epoch, activeEpoch });
+      return false;
+    }
+
+    dbgPhase('push:start', { items: Array.isArray(batch) ? batch.length : -1, epoch });
 
     const okCsrf = await ensureCsrf();
-    dbgPhase('push:csrf_ready', { ok: okCsrf });
+    dbgPhase('push:csrf_ready', { ok: okCsrf, epoch });
 
     if (!okCsrf) {
-      dbgPhase('push:abort_no_csrf');
+      dbgPhase('push:abort_no_csrf', { epoch });
       return false;
     }
 
     const csrf = getCookie(CSRF_COOKIE_NAME);
-    dbgPhase('push:csrf_cookie', { has: !!csrf });
+    dbgPhase('push:csrf_cookie', { has: !!csrf, epoch });
 
     if (!csrf) {
-      dbgPhase('push:abort_cookie_empty');
+      dbgPhase('push:abort_cookie_empty', { epoch });
       return false;
     }
 
     try {
-      dbgPhase('push:fetch:start', { url: PUSH_ENDPOINT });
+      dbgPhase('push:fetch:start', { url: PUSH_ENDPOINT, epoch });
 
       const res = await fetch(PUSH_ENDPOINT, {
         method: 'POST',
@@ -518,42 +513,55 @@
         ok: res.ok,
         status: res.status,
         hasJson: !!j,
+        epoch,
       });
 
       return res.ok;
     } catch (e) {
-      dbgPhase('push:fetch:error', { msg: String(e && e.message ? e.message : e) });
+      dbgPhase('push:fetch:error', { msg: String(e && e.message ? e.message : e), epoch });
       return false;
     }
   }
 
   // ★forceNoCache=true の時は kb_diary_cache を見ずに必ず取りに行く
-  async function workerFetchOne(task, forceNoCache) {
+  async function workerFetchOne(task, forceNoCache, epoch) {
     const { id, diaryUrl } = task;
 
-    dbgPhase('worker:start', { id, forceNoCache });
+    // ★強制中断：epochが古いrunはここで終了扱い
+    if (epoch !== activeEpoch) {
+      dbgPhase('worker:abort_stale_epoch', { id, epoch, activeEpoch });
+      return { id, latest_ts: null, error: 'stale_epoch', checked_at_ms: nowMs() };
+    }
+
+    dbgPhase('worker:start', { id, forceNoCache, epoch });
 
     if (!forceNoCache) {
       const c = getCached(diaryUrl);
       if (c) {
-        dbgPhase('worker:cache_hit', { id });
+        dbgPhase('worker:cache_hit', { id, epoch });
         return { id, latest_ts: c.latestTs, error: c.error || '', checked_at_ms: nowMs() };
       }
     }
 
     await sleep(250 + Math.floor(Math.random() * 350));
 
+    // もう一回チェック（sleepの間にforceでepochが切り替わることがある）
+    if (epoch !== activeEpoch) {
+      dbgPhase('worker:abort_stale_epoch_after_sleep', { id, epoch, activeEpoch });
+      return { id, latest_ts: null, error: 'stale_epoch', checked_at_ms: nowMs() };
+    }
+
     const r = await gmGet(diaryUrl);
     if (!r.ok) {
       const err = r.error || 'gm_error';
-      dbgPhase('worker:gm_fail', { id, err });
+      dbgPhase('worker:gm_fail', { id, err, epoch });
       setCached(diaryUrl, null, err);
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
 
     if ((r.status || 0) >= 400) {
       const err = `http_${r.status || 0}`;
-      dbgPhase('worker:http_fail', { id, err });
+      dbgPhase('worker:http_fail', { id, err, epoch });
       setCached(diaryUrl, null, err);
       return { id, latest_ts: null, error: err, checked_at_ms: nowMs() };
     }
@@ -564,6 +572,7 @@
       ok: (parsed.ts != null && !parsed.err),
       err: parsed.err || '',
       ts: parsed.ts != null ? String(parsed.ts) : '',
+      epoch,
     });
 
     if (parsed.ts != null && !parsed.err) {
@@ -579,8 +588,17 @@
   // Runner
   // ============================================================
   let running = false;
-  let forceQueued = false;
   let lastRunAt = 0;
+
+  // ★epoch：force押下で世代を切り替え、旧runを「強制終了扱い」にする
+  let epochCounter = 0;
+  let activeEpoch = 0;
+
+  function nextEpoch() {
+    epochCounter += 1;
+    activeEpoch = epochCounter;
+    return activeEpoch;
+  }
 
   function hasAnyUncached(slots) {
     for (const s of slots) {
@@ -589,48 +607,65 @@
     return false;
   }
 
-  async function runOnce(reason) {
-    if (running) {
-      dbgPhase('run:skip_already_running', { reason });
+  async function runOnce(reason, opt) {
+    const options = opt && typeof opt === 'object' ? opt : {};
+    const forceNoCache = (String(reason || '') === 'force') || !!options.forceNoCache;
+    const ignoreRunning = !!options.ignoreRunning;
+    const epoch = (options.epoch != null) ? Number(options.epoch) : activeEpoch;
+
+    if (!ignoreRunning && running) {
+      dbgPhase('run:skip_already_running', { reason, epoch, activeEpoch });
       return;
     }
 
     const slots = collectSlots();
-    dbgPhase('run:slots', { reason, count: slots.length });
+    dbgPhase('run:slots', { reason, count: slots.length, epoch, activeEpoch });
 
     if (!slots.length) {
-      dbgPhase('run:abort_no_slots', { reason });
+      dbgPhase('run:abort_no_slots', { reason, epoch });
       return;
     }
-
-    const forceNoCache = (String(reason || '') === 'force');
 
     const now = nowMs();
     const intervalOk = (!lastRunAt || (now - lastRunAt) >= MIN_RUN_INTERVAL_MS);
 
     if (!forceNoCache) {
       if (!intervalOk && !hasAnyUncached(slots)) {
-        dbgPhase('run:guard_interval_block', { sinceMs: (now - lastRunAt) });
+        dbgPhase('run:guard_interval_block', { sinceMs: (now - lastRunAt), epoch });
         return;
       }
+    }
+
+    // ★epochが古いrunは開始直後に弾く
+    if (epoch !== activeEpoch) {
+      dbgPhase('run:abort_stale_epoch_before_start', { reason, epoch, activeEpoch });
+      return;
     }
 
     running = true;
     lastRunAt = now;
 
-    dbgPhase('run:start', { reason, forceNoCache });
+    dbgPhase('run:start', { reason, forceNoCache, epoch });
 
     try {
       const tasks = slots.map(s => ({ id: s.id, diaryUrl: s.diaryUrl }));
       const results = [];
       let idx = 0;
 
-      dbgPhase('run:workers_start', { concurrency: CONCURRENCY });
+      dbgPhase('run:workers_start', { concurrency: CONCURRENCY, epoch });
 
       const workers = Array.from({ length: CONCURRENCY }, async () => {
-        while (idx < tasks.length) {
+        while (true) {
+          // ★forceでepochが切り替わったらこのworkerは即終了
+          if (epoch !== activeEpoch) {
+            dbgPhase('worker:loop_abort_stale_epoch', { epoch, activeEpoch });
+            break;
+          }
+
+          if (idx >= tasks.length) break;
+
           const t = tasks[idx++];
-          const r = await workerFetchOne(t, forceNoCache);
+          const r = await workerFetchOne(t, forceNoCache, epoch);
           results.push(r);
         }
       });
@@ -639,28 +674,32 @@
 
       dbgPhase('run:fetched', {
         total: results.length,
-        errors: results.filter(x => !!x.error).length,
+        errors: results.filter(x => !!x.error && x.error !== 'stale_epoch').length,
+        epoch,
+        activeEpoch,
       });
 
-      const ok = await pushResults(results);
-      dbgPhase('run:pushed', { ok });
+      // ★epochが古いrunはpushしない
+      if (epoch !== activeEpoch) {
+        dbgPhase('run:skip_push_stale_epoch', { epoch, activeEpoch });
+        return;
+      }
+
+      const ok = await pushResults(results, epoch);
+      dbgPhase('run:pushed', { ok, epoch });
 
       if (ok) {
         notifyPushed(results.map(x => x.id));
-        dbgPhase('run:notify_pushed', { ids: results.map(x => x.id).slice(0, 8).join(',') });
+        dbgPhase('run:notify_pushed', { ids: results.map(x => x.id).slice(0, 8).join(','), epoch });
       }
     } catch (e) {
-      dbgPhase('run:error', { msg: String(e && e.message ? e.message : e) });
+      dbgPhase('run:error', { msg: String(e && e.message ? e.message : e), epoch });
     } finally {
-      running = false;
-      dbgPhase('run:done', { reason });
-
-      // もし「走行中にforceが来た」なら、終わった直後に必ず1回だけforceを流す
-      if (forceQueued) {
-        forceQueued = false;
-        dbgPhase('run:force_dequeued');
-        runOnce('force').catch(() => {});
+      // ★epochが一致しているrunだけがrunningを戻す（古いrunが新しいrunを邪魔しない）
+      if (epoch === activeEpoch) {
+        running = false;
       }
+      dbgPhase('run:done', { reason, epoch, activeEpoch, running });
     }
   }
 
@@ -673,7 +712,8 @@
   function schedule(reason) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      runOnce(reason).catch(() => {});
+      // scheduleは「最新epoch」で走る
+      runOnce(reason, { epoch: activeEpoch, ignoreRunning: false }).catch(() => {});
     }, 600);
   }
 
@@ -683,10 +723,12 @@
     if (!sig) return;
     if (sig === lastSig) return;
     lastSig = sig;
-    dbgPhase('slots:changed', { count: slots.length });
+    dbgPhase('slots:changed', { count: slots.length, epoch: activeEpoch });
     schedule('slots_changed');
   }
 
+  // 初期epoch
+  nextEpoch();
   checkSlotsChangedAndSchedule();
 
   const mo = new MutationObserver((mutations) => {
@@ -705,25 +747,27 @@
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
   setInterval(() => {
-    runOnce('interval').catch(() => {});
+    // intervalは「今のepoch」で通常実行（running中はスキップ）
+    runOnce('interval', { epoch: activeEpoch, ignoreRunning: false }).catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
   // ============================================================
-  // ★最強ボタン（force）：ガード無視・キャッシュ無視・必ず走らせる
+  // ★最強ボタン（force）：running無視・キャッシュ無視・必ず push まで走らせる
   // ============================================================
   window.kbDiaryForcePush = () => {
-    dbgPhase('force:called', { running, lastRunAgoMs: lastRunAt ? (nowMs() - lastRunAt) : -1 });
+    const newEp = nextEpoch();
 
-    // すでに走っているなら予約だけ（終わった直後にforceが必ず走る）
-    if (running) {
-      forceQueued = true;
-      dbgPhase('force:queued');
-      return;
-    }
+    dbgPhase('force:hard_called', {
+      running,
+      lastRunAgoMs: lastRunAt ? (nowMs() - lastRunAt) : -1,
+      newEpoch: newEp,
+    });
 
-    // forceはクールダウン無視
+    // ★クールダウン等を完全無視したいので lastRunAt を無効化
     lastRunAt = 0;
-    runOnce('force').catch(() => {});
+
+    // ★ここが「最強」：running中でも即、別世代で開始（旧runはpushしない）
+    runOnce('force', { epoch: newEp, ignoreRunning: true, forceNoCache: true }).catch(() => {});
   };
 
 })();
