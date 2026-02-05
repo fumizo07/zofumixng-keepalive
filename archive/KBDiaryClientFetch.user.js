@@ -1,26 +1,28 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.19
-// @description  Fetch diary latest timestamp in real browser and push to KB server (clean, epoch force, minimal signals; unsafeWindow bridge)
+// @version      0.3.20
+// @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
-// @grant        unsafeWindow
 // @connect      www.cityheaven.net
 // @connect      cityheaven.net
 // @connect      www.dto.jp
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 016
+// 017
 
 (() => {
   "use strict";
 
   // ============================================================
-  // Bridge: page window (Tampermonkey sandbox対策)
+  // Bridge events (DOM CustomEvent: sandbox跨ぎの本命)
   // ============================================================
-  const W = (typeof unsafeWindow !== "undefined" && unsafeWindow) ? unsafeWindow : window;
+  const EV_FORCE = "kb:diary:force";
+  const EV_SIGNAL = "kb:diary:signal";
+  const EV_PUSHED = "kb-diary-pushed"; // 既存互換（kb.jsがこれを待っている）
+  const EV_PUSHED2 = "kb:diary:pushed"; // 新名（任意）
 
   // ============================================================
   // Guard (shared secret)
@@ -74,13 +76,6 @@
   // GM availability
   // ============================================================
   const gmOk = (typeof GM_xmlhttpRequest === "function");
-  if (!gmOk) {
-    // 公開先は必ず W（ページ側window）
-    W.kbDiaryForcePush = () => {
-      alert("このブラウザは GM_xmlhttpRequest 非対応のため、日記の外部取得ができません。");
-    };
-    return;
-  }
 
   // ============================================================
   // Config
@@ -99,12 +94,25 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ============================================================
-  // Minimal signals (for kb.js)
+  // Signals (for kb.js)
   // ============================================================
   function emit(stage, detail) {
     const payload = { stage, at: nowMs(), ...(detail || {}) };
-    try { W.__kbDiaryLastSignal = payload; } catch (_) {}
-    try { W.dispatchEvent(new W.CustomEvent("kb-diary-signal", { detail: payload })); } catch (_) {}
+    try { window.__kbDiaryLastSignal = payload; } catch (_) {}
+
+    // document に投げるのが本命（sandbox跨ぎ）
+    try { document.dispatchEvent(new CustomEvent(EV_SIGNAL, { detail: payload })); } catch (_) {}
+
+    // 念のため window にも投げる（観測の取りこぼしを減らす）
+    try { window.dispatchEvent(new CustomEvent(EV_SIGNAL, { detail: payload })); } catch (_) {}
+  }
+
+  function broadcastPushed(ids, rid, epoch) {
+    const detail = { ids: Array.isArray(ids) ? ids : [], rid: String(rid || ""), epoch: Number(epoch || 0) };
+    try { document.dispatchEvent(new CustomEvent(EV_PUSHED, { detail })); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent(EV_PUSHED, { detail })); } catch (_) {}
+    try { document.dispatchEvent(new CustomEvent(EV_PUSHED2, { detail })); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent(EV_PUSHED2, { detail })); } catch (_) {}
   }
 
   // ============================================================
@@ -383,28 +391,28 @@
   // ============================================================
   // Push
   // ============================================================
-  async function pushResults(batch, epoch) {
+  async function pushResults(batch, epoch, rid) {
     if (epoch !== activeEpoch) {
-      emit("push_skip_stale_epoch", { epoch, activeEpoch });
+      emit("push_skip_stale_epoch", { rid, epoch, activeEpoch });
       return { ok: false, status: 0, reason: "stale_epoch" };
     }
 
-    emit("push_start", { epoch, items: Array.isArray(batch) ? batch.length : 0 });
+    emit("push_start", { rid, epoch, items: Array.isArray(batch) ? batch.length : 0 });
 
     const okCsrf = await ensureCsrf();
     if (!okCsrf) {
-      emit("push_abort_no_csrf", { epoch });
+      emit("push_abort_no_csrf", { rid, epoch });
       return { ok: false, status: 0, reason: "no_csrf" };
     }
 
     const csrf = getCookie(CSRF_COOKIE_NAME);
     if (!csrf) {
-      emit("push_abort_cookie_empty", { epoch });
+      emit("push_abort_cookie_empty", { rid, epoch });
       return { ok: false, status: 0, reason: "cookie_empty" };
     }
 
     try {
-      emit("push_fetch_start", { epoch });
+      emit("push_fetch_start", { rid, epoch });
       const res = await fetch(PUSH_ENDPOINT, {
         method: "POST",
         headers: {
@@ -416,10 +424,10 @@
         cache: "no-store",
       });
 
-      emit("push_fetch_done", { epoch, ok: !!res.ok, status: res.status });
+      emit("push_fetch_done", { rid, epoch, ok: !!res.ok, status: res.status });
       return { ok: !!res.ok, status: res.status, reason: res.ok ? "" : "http_error" };
     } catch (e) {
-      emit("push_fetch_error", { epoch, msg: String(e && e.message ? e.message : e) });
+      emit("push_fetch_error", { rid, epoch, msg: String(e && e.message ? e.message : e) });
       return { ok: false, status: 0, reason: "exception" };
     }
   }
@@ -492,15 +500,24 @@
 
   async function runOnce(reason, opt) {
     const options = opt && typeof opt === "object" ? opt : {};
+    const rid = String(options.rid || "");
     const forceNoCache = (String(reason || "") === "force") || !!options.forceNoCache;
     const ignoreRunning = !!options.ignoreRunning;
     const epoch = (options.epoch != null) ? Number(options.epoch) : activeEpoch;
 
-    if (!ignoreRunning && running) return;
+    if (!ignoreRunning && running) {
+      emit("run_blocked_running", { rid, reason, epoch, activeEpoch });
+      return;
+    }
+
+    if (!gmOk) {
+      emit("gm_unavailable", { rid, reason, epoch, activeEpoch });
+      return;
+    }
 
     const slots = collectSlots();
     if (!slots.length) {
-      emit("run_abort_no_slots", { reason, epoch, activeEpoch });
+      emit("run_abort_no_slots", { rid, reason, epoch, activeEpoch });
       return;
     }
 
@@ -509,15 +526,20 @@
 
     if (!forceNoCache) {
       if (!intervalOk && !hasAnyUncached(slots)) {
-        emit("run_guard_interval_block", { reason, epoch, sinceMs: (now - lastRunAt) });
+        emit("run_guard_interval_block", { rid, reason, epoch, sinceMs: (now - lastRunAt) });
         return;
       }
     }
 
-    if (epoch !== activeEpoch) return;
+    if (epoch !== activeEpoch) {
+      emit("run_blocked_epoch", { rid, reason, epoch, activeEpoch });
+      return;
+    }
 
     running = true;
     lastRunAt = now;
+
+    emit("run_start", { rid, reason, epoch, slot_count: slots.length });
 
     try {
       const tasks = slots.map((s) => ({ id: s.id, diaryUrl: s.diaryUrl }));
@@ -536,21 +558,26 @@
 
       await Promise.all(workers);
 
-      if (epoch !== activeEpoch) return;
-
-      const pushRes = await pushResults(results, epoch);
-      if (pushRes.ok) {
-        try {
-          W.dispatchEvent(new W.CustomEvent("kb-diary-pushed", { detail: { ids: results.map((x) => x.id) } }));
-        } catch (_) {}
+      if (epoch !== activeEpoch) {
+        emit("run_abort_stale_epoch", { rid, reason, epoch, activeEpoch });
+        return;
       }
+
+      const pushRes = await pushResults(results, epoch, rid);
+      if (pushRes.ok) {
+        broadcastPushed(results.map((x) => x.id), rid, epoch);
+      } else {
+        emit("push_failed", { rid, epoch, status: pushRes.status || 0, reason: pushRes.reason || "" });
+      }
+
+      emit("done", { rid, epoch, ok: !!pushRes.ok, status: pushRes.status || 0 });
     } finally {
       if (epoch === activeEpoch) running = false;
     }
   }
 
   // ============================================================
-  // Start & watch
+  // Start & watch (auto)
   // ============================================================
   let lastSig = "";
   let timer = null;
@@ -566,7 +593,7 @@
   function schedule(reason) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
-      runOnce(reason, { epoch: activeEpoch, ignoreRunning: false }).catch(() => {});
+      runOnce(reason, { epoch: activeEpoch, ignoreRunning: false, rid: "" }).catch(() => {});
     }, 600);
   }
 
@@ -594,25 +621,43 @@
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
   setInterval(() => {
-    runOnce("interval", { epoch: activeEpoch, ignoreRunning: false }).catch(() => {});
+    runOnce("interval", { epoch: activeEpoch, ignoreRunning: false, rid: "" }).catch(() => {});
   }, MIN_RUN_INTERVAL_MS);
 
   // ============================================================
-  // Force (single click safe)
+  // Force (DOM event)
   // ============================================================
-  let lastForceClickAt = 0;
+  let lastForceAt = 0;
   const FORCE_DEBOUNCE_MS = 500;
 
-  W.kbDiaryForcePush = () => {
+  function onForceEvent(ev) {
+    const d = ev && ev.detail ? ev.detail : {};
+    const rid = String(d.rid || "");
+    const origin = String(d.origin || "");
     const now = nowMs();
-    if (now - lastForceClickAt < FORCE_DEBOUNCE_MS) return;
-    lastForceClickAt = now;
+
+    emit("force_received", { rid, origin });
+
+    if (!gmOk) {
+      emit("gm_unavailable", { rid, origin });
+      return;
+    }
+
+    if (now - lastForceAt < FORCE_DEBOUNCE_MS) {
+      emit("force_debounced", { rid, ms: (now - lastForceAt) });
+      return;
+    }
+    lastForceAt = now;
 
     const newEp = nextEpoch();
     lastRunAt = 0;
 
-    emit("force_called", { newEpoch: newEp });
-    runOnce("force", { epoch: newEp, ignoreRunning: true, forceNoCache: true }).catch(() => {});
-  };
+    emit("force_accept", { rid, newEpoch: newEp });
+    runOnce("force", { epoch: newEp, ignoreRunning: true, forceNoCache: true, rid }).catch(() => {});
+  }
+
+  // documentが本命。windowも念のため。
+  try { document.addEventListener(EV_FORCE, onForceEvent, { passive: true }); } catch (_) {}
+  try { window.addEventListener(EV_FORCE, onForceEvent, { passive: true }); } catch (_) {}
 
 })();
