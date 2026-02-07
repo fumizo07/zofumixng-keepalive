@@ -2,7 +2,7 @@
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
 // @version      0.3.21
-// @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed unified)
+// @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
@@ -17,11 +17,11 @@
   "use strict";
 
   // ============================================================
-  // Bridge events (DOM CustomEvent: sandbox跨ぎの本命)
+  // Bridge events (DOM CustomEvent)
   // ============================================================
   const EV_FORCE = "kb:diary:force";
   const EV_SIGNAL = "kb:diary:signal";
-  const EV_PUSHED = "kb:diary:pushed"; // ★統一：これだけ投げる
+  const EV_PUSHED2 = "kb:diary:pushed"; // ★統一
 
   // ============================================================
   // Guard (shared secret)
@@ -84,8 +84,8 @@
   const CSRF_COOKIE_NAME = "kb_csrf";
   const CSRF_HEADER_NAME = "X-KB-CSRF";
 
-  const CACHE_TTL_MS = 10 * 60 * 1000;        // 10分
-  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000; // 10分
+  const CACHE_TTL_MS = 10 * 60 * 1000;
+  const MIN_RUN_INTERVAL_MS = 10 * 60 * 1000;
   const MAX_IDS = 30;
   const CONCURRENCY = 2;
 
@@ -93,29 +93,20 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ============================================================
-  // Signals (for kb.js)
+  // Signals (for kb_diary_show.js)
   // ============================================================
   function emit(stage, detail) {
     const payload = { stage, at: nowMs(), ...(detail || {}) };
     try { window.__kbDiaryLastSignal = payload; } catch (_) {}
 
-    // document に投げるのが本命（sandbox跨ぎ）
     try { document.dispatchEvent(new CustomEvent(EV_SIGNAL, { detail: payload })); } catch (_) {}
-
-    // 念のため window にも投げる（観測の取りこぼしを減らす）
     try { window.dispatchEvent(new CustomEvent(EV_SIGNAL, { detail: payload })); } catch (_) {}
   }
 
   function broadcastPushed(ids, rid, epoch) {
-    const detail = {
-      ids: Array.isArray(ids) ? ids : [],
-      rid: String(rid || ""),
-      epoch: Number(epoch || 0),
-    };
-
-    // ★統一：documentが本命。windowも念のため。
-    try { document.dispatchEvent(new CustomEvent(EV_PUSHED, { detail })); } catch (_) {}
-    try { window.dispatchEvent(new CustomEvent(EV_PUSHED, { detail })); } catch (_) {}
+    const detail = { ids: Array.isArray(ids) ? ids : [], rid: String(rid || ""), epoch: Number(epoch || 0) };
+    try { document.dispatchEvent(new CustomEvent(EV_PUSHED2, { detail })); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent(EV_PUSHED2, { detail })); } catch (_) {}
   }
 
   // ============================================================
@@ -659,8 +650,6 @@
     runOnce("force", { epoch: newEp, ignoreRunning: true, forceNoCache: true, rid }).catch(() => {});
   }
 
-  // documentが本命。windowも念のため。
   try { document.addEventListener(EV_FORCE, onForceEvent, { passive: true }); } catch (_) {}
   try { window.addEventListener(EV_FORCE, onForceEvent, { passive: true }); } catch (_) {}
-
 })();
