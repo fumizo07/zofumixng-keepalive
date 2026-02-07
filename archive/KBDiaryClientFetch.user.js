@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.20
-// @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals)
+// @version      0.3.21
+// @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed unified)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
 // @connect      www.cityheaven.net
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 017
+// 018
 
 (() => {
   "use strict";
@@ -21,8 +21,7 @@
   // ============================================================
   const EV_FORCE = "kb:diary:force";
   const EV_SIGNAL = "kb:diary:signal";
-  const EV_PUSHED = "kb-diary-pushed"; // 既存互換（kb.jsがこれを待っている）
-  const EV_PUSHED2 = "kb:diary:pushed"; // 新名（任意）
+  const EV_PUSHED = "kb:diary:pushed"; // ★統一：これだけ投げる
 
   // ============================================================
   // Guard (shared secret)
@@ -108,11 +107,15 @@
   }
 
   function broadcastPushed(ids, rid, epoch) {
-    const detail = { ids: Array.isArray(ids) ? ids : [], rid: String(rid || ""), epoch: Number(epoch || 0) };
+    const detail = {
+      ids: Array.isArray(ids) ? ids : [],
+      rid: String(rid || ""),
+      epoch: Number(epoch || 0),
+    };
+
+    // ★統一：documentが本命。windowも念のため。
     try { document.dispatchEvent(new CustomEvent(EV_PUSHED, { detail })); } catch (_) {}
     try { window.dispatchEvent(new CustomEvent(EV_PUSHED, { detail })); } catch (_) {}
-    try { document.dispatchEvent(new CustomEvent(EV_PUSHED2, { detail })); } catch (_) {}
-    try { window.dispatchEvent(new CustomEvent(EV_PUSHED2, { detail })); } catch (_) {}
   }
 
   // ============================================================
