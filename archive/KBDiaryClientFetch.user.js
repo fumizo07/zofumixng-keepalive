@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.24
+// @version      0.3.25
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -11,7 +11,7 @@
 // @connect      dto.jp
 // @connect      s.dto.jp
 // ==/UserScript==
-// 018
+// 020
 
 (() => {
   "use strict";
