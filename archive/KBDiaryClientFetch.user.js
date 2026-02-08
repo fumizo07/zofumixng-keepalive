@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.22
+// @version      0.3.23
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -191,6 +191,21 @@
       });
     });
   }
+
+
+  // ============================================================
+  // GM GET (hard timeout wrapper for Soul)
+  // ============================================================
+  async function gmGetHard(url, hardTimeoutMs = 28000) {
+    // gmGet自体のtimeoutが効かない環境があるので、JS側で必ず回収する
+    const p = gmGet(url);
+    const t = new Promise((resolve) =>
+      setTimeout(() => resolve({ ok: false, status: 0, text: "", error: "hard_timeout" }), hardTimeoutMs)
+    );
+    const r = await Promise.race([p, t]);
+    return r;
+  }
+
 
   // ============================================================
   // Parsers (Heaven / DTO)
@@ -447,7 +462,7 @@
       return { id, latest_ts: null, error: "stale_epoch", checked_at_ms: nowMs() };
     }
 
-    const r = await gmGet(diaryUrl);
+    const r = await gmGetHard(diaryUrl, 28000);
     if (!r.ok) {
       const err = r.error || "gm_error";
       setCached(diaryUrl, null, err);
@@ -622,7 +637,7 @@
   // Force (DOM event)
   // ============================================================
   let lastForceAt = 0;
-  const FORCE_DEBOUNCE_MS = 500;
+  const FORCE_DEBOUNCE_MS = 0;
 
   function onForceEvent(ev) {  
     const d = ev && ev.detail ? ev.detail : {};
