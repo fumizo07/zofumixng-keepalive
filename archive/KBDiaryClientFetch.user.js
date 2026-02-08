@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.23
+// @version      0.3.24
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -90,6 +90,58 @@
   const CONCURRENCY = 2;
 
   const nowMs = () => Date.now();
+
+
+// ============================================================
+  // UI badge (Userscript only) : show quick status on the page 後で消す
+  // ============================================================
+  const KB_US_BADGE_ID = "kb-us-badge";
+
+  function ensureBadge() {
+    let el = document.getElementById(KB_US_BADGE_ID);
+    if (el) return el;
+
+    el = document.createElement("div");
+    el.id = KB_US_BADGE_ID;
+    el.style.position = "fixed";
+    el.style.right = "12px";
+    el.style.bottom = "12px";
+    el.style.zIndex = "2147483647";
+    el.style.padding = "8px 10px";
+    el.style.borderRadius = "10px";
+    el.style.fontSize = "12px";
+    el.style.lineHeight = "1.2";
+    el.style.background = "rgba(0,0,0,0.78)";
+    el.style.color = "#fff";
+    el.style.boxShadow = "0 6px 18px rgba(0,0,0,0.25)";
+    el.style.maxWidth = "70vw";
+    el.style.whiteSpace = "pre-wrap";
+    el.style.userSelect = "none";
+    el.style.pointerEvents = "none"; // クリック邪魔しない
+    el.textContent = "";
+
+    document.documentElement.appendChild(el);
+    return el;
+  }
+
+  let badgeTimer = null;
+  function showBadge(msg, ms) {
+    const el = ensureBadge();
+    el.textContent = String(msg || "");
+    el.style.display = "";
+    if (badgeTimer) clearTimeout(badgeTimer);
+    const ttl = Number.isFinite(Number(ms)) ? Number(ms) : 1800;
+    badgeTimer = setTimeout(() => {
+      try { el.style.display = "none"; } catch (_) {}
+    }, ttl);
+  }
+
+
+
+
+
+
+  
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ============================================================
@@ -408,6 +460,10 @@
 
     emit("push_start", { rid, epoch, items: Array.isArray(batch) ? batch.length : 0 });
 
+    // 後で消す
+    showBadge(`US: push開始\nitems=${Array.isArray(batch) ? batch.length : 0}\nepoch=${epoch}`, 1500);
+
+
     const okCsrf = await ensureCsrf();
     if (!okCsrf) {
       emit("push_abort_no_csrf", { rid, epoch });
@@ -434,9 +490,23 @@
       });
 
       emit("push_fetch_done", { rid, epoch, ok: !!res.ok, status: res.status });
+
+
+// 後で消す
+      showBadge(`US: push結果\nok=${res.ok ? "YES" : "NO"}\nstatus=${res.status}`, 2000);
+
+
+      
       return { ok: !!res.ok, status: res.status, reason: res.ok ? "" : "http_error" };
     } catch (e) {
       emit("push_fetch_error", { rid, epoch, msg: String(e && e.message ? e.message : e) });
+
+
+// 後で消す
+      showBadge(`US: push例外\n${String(e && e.message ? e.message : e)}`, 2500);
+
+
+      
       return { ok: false, status: 0, reason: "exception" };
     }
   }
@@ -646,6 +716,14 @@
     const now = nowMs();
 
     emit("force_received", { rid, origin });
+
+
+// 後で消す 「今すぐ日記取得」を押した瞬間に見える合図（Userscriptが受信できた証拠）
+    showBadge(`US: FORCE受信\nrid=${rid || "-"}\norigin=${origin || "-"}`, 1500);
+
+
+
+    
 
     if (!gmOk) {
       emit("gm_unavailable", { rid, origin });
