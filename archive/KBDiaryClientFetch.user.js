@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      0.3.25
+// @version      0.3.26
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -407,9 +407,6 @@
     }
 
     emit("push_start", { rid, epoch, items: Array.isArray(batch) ? batch.length : 0 });
-    showBadge(`US: push開始\nitems=${Array.isArray(batch) ? batch.length : 0}\nepoch=${epoch}`, 1500);
-
-
     const okCsrf = await ensureCsrf();
     if (!okCsrf) {
       emit("push_abort_no_csrf", { rid, epoch });
