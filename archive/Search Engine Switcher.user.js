@@ -107,16 +107,10 @@
   // ===== URLを開く（標準：新規タブ、ダブルタップ：同一タブ） =====
   function openURL(url, { newTab = true } = {}) {
     if (newTab) {
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      (document.body || document.documentElement).appendChild(a);
-      a.click();
-      a.remove();
-
-      const w = window.open(url, '_blank', 'noopener');
-      if (!w) location.assign(url);
+      const w = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!w) {
+        location.assign(url);
+      }
     } else {
       location.assign(url);
     }
@@ -160,6 +154,14 @@
     wrap.style.lineHeight  = '1';
     wrap.style.color       = '#fff';
     wrap.style.userSelect  = 'none';
+    wrap.style.flexWrap    = 'nowrap';
+    wrap.style.whiteSpace  = 'nowrap';
+    wrap.style.maxWidth    = '100vw';
+    wrap.style.overflowX   = 'auto';
+    wrap.style.webkitTextSizeAdjust = '100%';
+    wrap.style.textSizeAdjust       = '100%';
+    wrap.style.overflowY   = 'hidden';
+    wrap.style.webkitOverflowScrolling = 'touch';
 
     ENGINES.forEach(engine => {
       const btn = document.createElement('button');
@@ -179,6 +181,8 @@
       btn.style.font         = 'inherit';
       btn.style.cursor       = 'pointer';
       btn.style.whiteSpace   = 'nowrap';
+      btn.style.flex         = '0 0 auto';
+      btn.style.wordBreak    = 'keep-all';
 
       let lastTap = 0;
       btn.addEventListener('pointerup', () => {
