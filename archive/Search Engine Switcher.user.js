@@ -8,7 +8,7 @@
 // @match       *://www.startpage.com/do/search?query=*
 // @run-at      document-idle
 // @grant       none
-// @version     1.4.0
+// @version     1.5.0
 // @noframes
 // ==/UserScript==
 
@@ -191,10 +191,16 @@
       btn.style.wordBreak    = 'keep-all';
 
       let lastTap = 0;
+      let lastInvoke = 0;
       btn.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         ev.stopImmediatePropagation();
+        const nowInvoke = Date.now();
+        if ((nowInvoke - lastInvoke) < 500) {
+          return;
+        }
+        lastInvoke = nowInvoke;
       
         let q = extractQuery() || initialQ || '';
         if (!q) {
@@ -208,9 +214,9 @@
         if (!engineCfg) return;
         const url = engineCfg.url(enc);
       
-        const now = Date.now();
-        const isDouble = (now - lastTap) <= DOUBLE_TAP_MS;
-        lastTap = now;
+        const tapNow = Date.now();
+        const isDouble = (tapNow - lastTap) <= DOUBLE_TAP_MS;
+        lastTap = tapNow;
       
         openURL(url, { newTab: !isDouble });
       }, true);
