@@ -8,7 +8,7 @@
 // @match       *://www.startpage.com/do/search?query=*
 // @run-at      document-idle
 // @grant       none
-// @version     1.5.0
+// @version     1.6.0
 // @noframes
 // ==/UserScript==
 
@@ -111,13 +111,11 @@
   // ===== URLを開く（標準：新規タブ、ダブルタップ：同一タブ） =====
   function openURL(url, { newTab = true } = {}) {
     if (newTab) {
-      const w = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!w) {
-        location.assign(url);
-      }
-    } else {
-      location.assign(url);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
     }
+  
+    location.assign(url);
   }
 
   // ===== 現在どのエンジンか判定 =====
