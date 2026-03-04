@@ -4,7 +4,7 @@
 // @match       *://*/*
 // @run-at      document-idle
 // @grant       none
-// @version     1.2.0
+// @version     1.3.0
 // @noframes
 // ==/UserScript==
 
