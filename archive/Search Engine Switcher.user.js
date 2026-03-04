@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name        Search Engine Switcher (VIA風ボトムバー) — new tab default (search-sites only + SearxNG) - safe
 // @description いま見てる検索結果のクエリを保ったまま、Startpage / DuckDuckGo / Brave / SearxNG / Google にワンタップ切替（標準で新規タブ）。ダブルタップで同一タブ。検索サイト上でのみ表示。
-// @match       *://*/*
+// @match       *://www.google.com/search?q=*
+// @match       *://duckduckgo.com/?q=*
+// @match       *://search.brave.com/search?q=*
+// @match       *://zofumixng.onrender.com/search?q=*
+// @match       *://www.startpage.com/do/search?query=*
 // @run-at      document-idle
 // @grant       none
-// @version     1.3.0
+// @version     1.4.0
 // @noframes
 // ==/UserScript==
 
@@ -165,6 +169,7 @@
 
     ENGINES.forEach(engine => {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.textContent = engine.label;
       btn.title = 'シングルタップ: 新規タブ / ダブルタップ: 同一タブ';
       btn.setAttribute(BTN_ATTR, engine.id);
@@ -180,29 +185,35 @@
       btn.style.touchAction  = 'manipulation';
       btn.style.font         = 'inherit';
       btn.style.cursor       = 'pointer';
+      btn.style.pointerEvents = 'auto';
       btn.style.whiteSpace   = 'nowrap';
       btn.style.flex         = '0 0 auto';
       btn.style.wordBreak    = 'keep-all';
 
       let lastTap = 0;
-      btn.addEventListener('pointerup', () => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+      
         let q = extractQuery() || initialQ || '';
         if (!q) {
           q = prompt('検索語が見つかりません。クエリを入力してください：') || '';
           q = q.trim();
           if (!q) return;
         }
+      
         const enc = encodeURIComponent(q);
         const engineCfg = ENGINES.find(e => e.id === engine.id);
         if (!engineCfg) return;
         const url = engineCfg.url(enc);
-
+      
         const now = Date.now();
         const isDouble = (now - lastTap) <= DOUBLE_TAP_MS;
         lastTap = now;
-
+      
         openURL(url, { newTab: !isDouble });
-      });
+      }, true);
 
       wrap.appendChild(btn);
     });
