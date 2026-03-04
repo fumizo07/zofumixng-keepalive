@@ -72,23 +72,19 @@
 
   // ===== 画面下げ用のオーバーレイ CSS（衝突しにくいクラス名に変更） =====
   const htmlBottom = document.createElement('style');
-  htmlBottom.textContent = `
-/* 画面上部にかぶせるオーバーレイ（html.__onehand_reach__ が付いているときだけ有効） */
-html.__onehand_reach__::before {
+htmlBottom.textContent = `
+html::before {
   background: #d7d7db;
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 60vh;
+  height: 0vh;
   display: block;
   transition: height .5s;
   content: "";
-  z-index: 2147483646 !important;
-  pointer-events: none;
 }
 
-/* 「固定要素のうち、下げる対象」だけを動かす */
+html.__onehand_reach__::before {
+  height: 60vh;
+}
+
 html.__onehand_reach__ .__onehand_fixed__ {
   top: 60vh !important;
 }
@@ -105,11 +101,15 @@ html.__onehand_reach__ .__onehand_fixed__ {
     // 名前空間オブジェクト（リセット用）
     window._ONEHAND_ = {
       reset: e => {
-        if (!e || e.target.tagName !== 'HTML') return;
+        if (!e) return;
+        if (button2.contains(e.target)) return;
+    
         docEl.classList.remove('__onehand_reach__');
         document
           .querySelectorAll('.__onehand_fixed__')
           .forEach(el => el.classList.remove('__onehand_fixed__'));
+    
+        window.removeEventListener('click', window._ONEHAND_.reset, true);
       },
     };
 
@@ -124,12 +124,8 @@ html.__onehand_reach__ .__onehand_fixed__ {
       f = f.parentNode;
     }
 
-    addEventListener('click', _ONEHAND_.reset);
+    window.addEventListener('click', window._ONEHAND_.reset, true);
 
-    // 元コード互換：_ONEHAND_.apply が定義されていれば呼ぶ（定義されていない場合は何もしない）
-    if (typeof _ONEHAND_.apply === 'function') {
-      setTimeout(_ONEHAND_.apply, 10);
-    }
   });
 
   // ===== フリック判定用の変数 =====
