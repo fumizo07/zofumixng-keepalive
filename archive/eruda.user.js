@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eruda
 // @namespace    http://tampermonkey.net/
-// @version      0.5
+// @version      0.6
 // @description  Console for mobile browsers
 // @author       kairusds
 // @include      http://*
@@ -22,17 +22,21 @@
     return;
   }
 
-  // すでに eruda オブジェクトがあるなら何もしない
-  if (typeof window.eruda !== 'undefined' && window.eruda) {
-    return;
-  }
-
   // すでに eruda のルートDOMがあるなら何もしない
   if (document.getElementById('eruda')) {
     return;
   }
 
-  eruda.init();
+  if (window.__ERUDA_INIT_CALLED__) {
+    return;
+  }
+  
+  try {
+    eruda.init();
+    window.__ERUDA_INIT_CALLED__ = true;
+  } catch (e) {
+    console.error('eruda.init() failed:', e);
+  }
 
   // 初期化後、入口ボタンが取れるなら必要に応じて隠す（不要ならこのブロックは消してよい）
   const btn =
