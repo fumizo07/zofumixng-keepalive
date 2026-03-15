@@ -1,7 +1,6 @@
 // ==UserScript==
 // @name         eruda
-// @namespace    http://tampermonkey.net/
-// @version      0.6
+// @version      0.10
 // @description  Console for mobile browsers
 // @author       kairusds
 // @include      http://*
@@ -9,8 +8,8 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/eruda/3.2.2/eruda.min.js
 // @icon         https://www.google.com/s2/favicons?domain=greasyfork.org
 // @downloadURL  https://gist.githubusercontent.com/kairusds/d98aaf7af7cfeed5ae4d91493c0c89b0/raw/eruda.js
-// @supportURL   https://gist.github.com/kairusds/d98aaf7af7cfeed5ae4d91493c0c89b0
-// @homepageURL  https://gist.github.com/kairusds/d98aaf7af7cfeed5ae4d91493c0c89b0
+// @supportURL   https://github.com/fumizo07/zofumixng-keepalive/edit/main/archive/eruda.user.js
+// @homepageURL  https://github.com/fumizo07/zofumixng-keepalive/edit/main/archive/eruda.user.js
 // @run-at       document-body
 // @grant        none
 // @noframes
