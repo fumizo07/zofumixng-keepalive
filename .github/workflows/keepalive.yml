@@ -26,7 +26,7 @@ jobs:
       #       -A "keepalive-bot/1.0" \
       #       "https://zofumixng.onrender.com/opensearch.xml" >/dev/null
 
-      - name: Curl Personal Search (root)
+      - name: Curl Personal Search (Ping)
         run: |
           set -euo pipefail
           curl -fsS -4 --location \
@@ -34,14 +34,4 @@ jobs:
             --max-time 20 \
             --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 40 \
             -A "keepalive-bot/1.0" \
-            "https://zofusai.onrender.com/" >/dev/null
-
-      - name: Curl Personal Search (favicon)
-        run: |
-          set -euo pipefail
-          curl -fsS -4 --location \
-            --connect-timeout 5 \
-            --max-time 20 \
-            --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 40 \
-            -A "keepalive-bot/1.0" \
-            "https://zofusai.onrender.com/static/favicon.ico" >/dev/null
+            "https://zofusai.onrender.com/fzmx-8f3k2q" >/dev/null
