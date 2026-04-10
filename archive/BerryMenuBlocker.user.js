@@ -219,4 +219,17 @@
     setTimeout(forceCloseIfOpenedUnexpectedly, 800);
     setTimeout(forceCloseIfOpenedUnexpectedly, 1500);
   }, true);
+  const oldMenu = document.getElementById('menu');
+  if (oldMenu && !oldMenu.dataset.berryPatched) {
+    const newMenu = oldMenu.cloneNode(true);
+    newMenu.dataset.berryPatched = '1';
+  
+    newMenu.addEventListener('click', function (e) {
+      if (!wasRecentRealTouch()) {
+        blockEvent(e);
+      }
+    }, true);
+  
+    oldMenu.parentNode.replaceChild(newMenu, oldMenu);
+  }
 })();
