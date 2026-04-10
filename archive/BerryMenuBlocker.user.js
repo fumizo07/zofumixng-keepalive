@@ -1,211 +1,124 @@
 // ==UserScript==
-// @name         Berry slide reset
+// @name         side-effect reset
 // @namespace    berry-workaround
-// @version      3.0.5
+// @version      1.0.0
 // @match        *://*.cityheaven.net/*
-// @run-at       document-end
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const TIMER_MS = 150;
-  let observer = null;
   let timerId = null;
+  let observer = null;
 
-  function setStyleSafe(el, prop, value, priority = 'important') {
+  function setStyle(el, prop, value) {
     if (!el || !el.style) return;
-    el.style.setProperty(prop, value, priority);
+    el.style.setProperty(prop, value, 'important');
   }
 
-  function removeClasses(el, classes) {
-    if (!el || !el.classList) return;
-    for (const cls of classes) {
-      el.classList.remove(cls);
-    }
+  function clearStyle(el, prop) {
+    if (!el || !el.style) return;
+    el.style.removeProperty(prop);
   }
 
-  function resetRootState() {
-    const targets = [document.documentElement, document.body].filter(Boolean);
-
-    for (const el of targets) {
-      removeClasses(el, ['open', 'menu-open', 'nav-open', 'drawer-open', 'is-open']);
-
-      setStyleSafe(el, 'overflow', 'auto');
-      setStyleSafe(el, 'height', 'auto');
-      setStyleSafe(el, 'min-height', '0');
-      setStyleSafe(el, 'max-height', 'none');
-      setStyleSafe(el, 'position', 'static');
-      setStyleSafe(el, 'top', 'auto');
-      setStyleSafe(el, 'left', 'auto');
-      setStyleSafe(el, 'right', 'auto');
-      setStyleSafe(el, 'bottom', 'auto');
-      setStyleSafe(el, 'margin-left', '0px');
-      setStyleSafe(el, 'margin-right', '0px');
-      setStyleSafe(el, 'transform', 'none');
-      setStyleSafe(el, 'translate', 'none');
-      setStyleSafe(el, 'width', 'auto');
-    }
-  }
-
-  function resetHomeState() {
+  function resetMenuSideEffects() {
+    const html = document.documentElement;
+    const body = document.body;
     const home = document.querySelector('ul#home');
-    if (!home) return;
-
-    setStyleSafe(home, 'position', 'static');
-    setStyleSafe(home, 'top', 'auto');
-    setStyleSafe(home, 'left', 'auto');
-    setStyleSafe(home, 'right', 'auto');
-    setStyleSafe(home, 'bottom', 'auto');
-    setStyleSafe(home, 'margin-left', '0px');
-    setStyleSafe(home, 'margin-right', '0px');
-    setStyleSafe(home, 'transform', 'none');
-    setStyleSafe(home, 'translate', 'none');
-    setStyleSafe(home, 'transition', 'none');
-    setStyleSafe(home, 'width', 'auto');
-    setStyleSafe(home, 'max-width', '100%');
-  }
-
-  function resetSpNaviState() {
     const spNavi = document.getElementById('spNavi');
-    if (!spNavi) return;
 
-    setStyleSafe(spNavi, 'overflow', 'auto');
-    setStyleSafe(spNavi, '-webkit-overflow-scrolling', 'touch');
-  }
-
-  function hideBrokenPanelIfNeeded() {
-    const spNavi = document.getElementById('spNavi');
-    if (!spNavi) return;
-
-    const rect = spNavi.getBoundingClientRect();
-    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-
-    const looksLikeFullPanel =
-      rect.width >= vw * 0.5 &&
-      rect.height >= vh * 0.5;
-
-    if (looksLikeFullPanel) {
-      setStyleSafe(spNavi, 'display', 'none');
-      setStyleSafe(spNavi, 'visibility', 'hidden');
-      setStyleSafe(spNavi, 'pointer-events', 'none');
+    if (html) {
+      html.classList.remove('open', 'menu-open', 'nav-open', 'drawer-open', 'is-open');
+      setStyle(html, 'overflow', 'auto');
+      clearStyle(html, 'height');
+      clearStyle(html, 'top');
+      clearStyle(html, 'left');
+      clearStyle(html, 'right');
+      clearStyle(html, 'bottom');
     }
-  }
 
-  function restoreHiddenMainCandidates() {
-    const selectors = [
-      '#wrapper', '#wrap', '#container', '#contents', '#content', '#main',
-      '.wrapper', '.wrap', '.container', '.contents', '.content', '.main',
-      '#page', '.page', '#sitewrap', '.sitewrap', '#app', '.app'
-    ];
-
-    for (const selector of selectors) {
-      for (const el of document.querySelectorAll(selector)) {
-        setStyleSafe(el, 'position', 'static');
-        setStyleSafe(el, 'top', 'auto');
-        setStyleSafe(el, 'left', 'auto');
-        setStyleSafe(el, 'right', 'auto');
-        setStyleSafe(el, 'margin-left', '0px');
-        setStyleSafe(el, 'margin-right', '0px');
-        setStyleSafe(el, 'transform', 'none');
-        setStyleSafe(el, 'translate', 'none');
-        setStyleSafe(el, 'transition', 'none');
-      }
+    if (body) {
+      body.classList.remove('open', 'menu-open', 'nav-open', 'drawer-open', 'is-open');
+      setStyle(body, 'overflow', 'auto');
+      clearStyle(body, 'height');
+      clearStyle(body, 'top');
+      clearStyle(body, 'left');
+      clearStyle(body, 'right');
+      clearStyle(body, 'bottom');
     }
-  }
 
-  function applyAllResets() {
-    resetRootState();
-    resetHomeState();
-    resetSpNaviState();
-    restoreHiddenMainCandidates();
-    hideBrokenPanelIfNeeded();
+    if (home) {
+      // ここが今回の本丸
+      clearStyle(home, 'position');
+      clearStyle(home, 'top');
+      clearStyle(home, 'left');
+      clearStyle(home, 'right');
+      clearStyle(home, 'bottom');
+      clearStyle(home, 'transform');
+      clearStyle(home, 'transition');
+    }
+
+    if (spNavi) {
+      // 表示は消すが、他要素の margin 等には触らない
+      setStyle(spNavi, 'display', 'none');
+      setStyle(spNavi, 'visibility', 'hidden');
+      setStyle(spNavi, 'pointer-events', 'none');
+      clearStyle(spNavi, 'overflow');
+      clearStyle(spNavi, '-webkit-overflow-scrolling');
+    }
   }
 
   function injectStyle() {
-    if (document.getElementById('berry-cityheaven-reset-style')) return;
+    if (document.getElementById('berry-cityheaven-fix-style')) return;
 
     const style = document.createElement('style');
-    style.id = 'berry-cityheaven-reset-style';
+    style.id = 'berry-cityheaven-fix-style';
     style.textContent = `
       html, body {
         overflow: auto !important;
-        height: auto !important;
-        min-height: 0 !important;
-        max-height: none !important;
-        position: static !important;
-        top: auto !important;
-        left: auto !important;
-        right: auto !important;
-        bottom: auto !important;
-        margin-left: 0 !important;
-        margin-right: 0 !important;
-        transform: none !important;
-        translate: none !important;
+      }
+
+      #spNavi {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
       }
 
       ul#home {
         position: static !important;
         top: auto !important;
-        left: auto !important;
-        right: auto !important;
-        bottom: auto !important;
-        margin-left: 0 !important;
-        margin-right: 0 !important;
-        transform: none !important;
-        translate: none !important;
-        transition: none !important;
-        max-width: 100% !important;
-      }
-
-      #wrapper, #wrap, #container, #contents, #content, #main,
-      .wrapper, .wrap, .container, .contents, .content, .main,
-      #page, .page, #sitewrap, .sitewrap, #app, .app {
-        position: static !important;
-        top: auto !important;
-        left: auto !important;
-        right: auto !important;
-        margin-left: 0 !important;
-        margin-right: 0 !important;
-        transform: none !important;
-        translate: none !important;
-        transition: none !important;
       }
     `;
+
     (document.head || document.documentElement).appendChild(style);
-  }
-
-  function startObserver() {
-    if (observer) return;
-
-    observer = new MutationObserver(() => {
-      applyAllResets();
-    });
-
-    observer.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'style']
-    });
-  }
-
-  function startTimer() {
-    if (timerId) return;
-    timerId = window.setInterval(applyAllResets, TIMER_MS);
   }
 
   function boot() {
     injectStyle();
-    applyAllResets();
-    startObserver();
-    startTimer();
+    resetMenuSideEffects();
 
-    setTimeout(applyAllResets, 50);
-    setTimeout(applyAllResets, 200);
-    setTimeout(applyAllResets, 500);
-    setTimeout(applyAllResets, 1000);
+    setTimeout(resetMenuSideEffects, 50);
+    setTimeout(resetMenuSideEffects, 150);
+    setTimeout(resetMenuSideEffects, 400);
+    setTimeout(resetMenuSideEffects, 900);
+
+    if (!timerId) {
+      timerId = window.setInterval(resetMenuSideEffects, 250);
+    }
+
+    if (!observer) {
+      observer = new MutationObserver(() => {
+        resetMenuSideEffects();
+      });
+
+      observer.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['class', 'style']
+      });
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -214,11 +127,10 @@
     boot();
   }
 
-  window.addEventListener('pageshow', applyAllResets, true);
-  window.addEventListener('focus', applyAllResets, true);
+  window.addEventListener('pageshow', resetMenuSideEffects, true);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      applyAllResets();
+      resetMenuSideEffects();
     }
   }, true);
 })();
