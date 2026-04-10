@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         hide broken menu
 // @namespace    berry-workaround
-// @version      2.0.0
+// @version      2.0.5
 // @match        *://*.cityheaven.net/*
 // @run-at       document-start
 // ==/UserScript==
