@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Berry menu blocker
 // @namespace    berry-workaround
-// @version      1.0.1
+// @version      1.0.2
 // @match        *://*.cityheaven.net/*
 // @run-at       document-start
 // ==/UserScript==
