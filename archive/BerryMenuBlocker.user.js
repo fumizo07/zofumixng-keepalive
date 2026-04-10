@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Berry slide reset
 // @namespace    berry-workaround
-// @version      3.0.0
+// @version      3.0.5
 // @match        *://*.cityheaven.net/*
-// @run-at       document-start
+// @run-at       document-end
 // ==/UserScript==
 
 (function () {
