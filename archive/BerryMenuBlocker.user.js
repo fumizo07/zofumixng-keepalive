@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         side-effect reset
+// @name         Berry menu reset v2
 // @namespace    berry-workaround
-// @version      1.0.0
+// @version      2.0.0
 // @match        *://*.cityheaven.net/*
 // @run-at       document-start
 // ==/UserScript==
@@ -12,17 +12,17 @@
   let timerId = null;
   let observer = null;
 
-  function setStyle(el, prop, value) {
+  function setImportant(el, prop, value) {
     if (!el || !el.style) return;
     el.style.setProperty(prop, value, 'important');
   }
 
-  function clearStyle(el, prop) {
+  function clearProp(el, prop) {
     if (!el || !el.style) return;
     el.style.removeProperty(prop);
   }
 
-  function resetMenuSideEffects() {
+  function resetMenuState() {
     const html = document.documentElement;
     const body = document.body;
     const home = document.querySelector('ul#home');
@@ -30,64 +30,72 @@
 
     if (html) {
       html.classList.remove('open', 'menu-open', 'nav-open', 'drawer-open', 'is-open');
-      setStyle(html, 'overflow', 'auto');
-      clearStyle(html, 'height');
-      clearStyle(html, 'top');
-      clearStyle(html, 'left');
-      clearStyle(html, 'right');
-      clearStyle(html, 'bottom');
+      setImportant(html, 'overflow', 'auto');
+      clearProp(html, 'height');
+      clearProp(html, 'top');
+      clearProp(html, 'left');
+      clearProp(html, 'right');
+      clearProp(html, 'bottom');
     }
 
     if (body) {
       body.classList.remove('open', 'menu-open', 'nav-open', 'drawer-open', 'is-open');
-      setStyle(body, 'overflow', 'auto');
-      clearStyle(body, 'height');
-      clearStyle(body, 'top');
-      clearStyle(body, 'left');
-      clearStyle(body, 'right');
-      clearStyle(body, 'bottom');
+      setImportant(body, 'overflow', 'auto');
+      clearProp(body, 'height');
+      clearProp(body, 'top');
+      clearProp(body, 'left');
+      clearProp(body, 'right');
+      clearProp(body, 'bottom');
     }
 
     if (home) {
-      // ここが今回の本丸
-      clearStyle(home, 'position');
-      clearStyle(home, 'top');
-      clearStyle(home, 'left');
-      clearStyle(home, 'right');
-      clearStyle(home, 'bottom');
-      clearStyle(home, 'transform');
-      clearStyle(home, 'transition');
+      // ここを弱くすると再発し、強くしすぎると他UIを壊すのでこの範囲に限定
+      setImportant(home, 'position', 'static');
+      setImportant(home, 'top', 'auto');
+      setImportant(home, 'left', 'auto');
+      setImportant(home, 'right', 'auto');
+      setImportant(home, 'bottom', 'auto');
+      setImportant(home, 'transform', 'none');
+      setImportant(home, 'transition', 'none');
     }
 
     if (spNavi) {
-      // 表示は消すが、他要素の margin 等には触らない
-      setStyle(spNavi, 'display', 'none');
-      setStyle(spNavi, 'visibility', 'hidden');
-      setStyle(spNavi, 'pointer-events', 'none');
-      clearStyle(spNavi, 'overflow');
-      clearStyle(spNavi, '-webkit-overflow-scrolling');
+      setImportant(spNavi, 'display', 'none');
+      setImportant(spNavi, 'visibility', 'hidden');
+      setImportant(spNavi, 'pointer-events', 'none');
+      setImportant(spNavi, 'overflow', 'hidden');
     }
   }
 
   function injectStyle() {
-    if (document.getElementById('berry-cityheaven-fix-style')) return;
+    if (document.getElementById('berry-cityheaven-menu-reset-style')) return;
 
     const style = document.createElement('style');
-    style.id = 'berry-cityheaven-fix-style';
+    style.id = 'berry-cityheaven-menu-reset-style';
     style.textContent = `
-      html, body {
+      html {
         overflow: auto !important;
+      }
+
+      body {
+        overflow: auto !important;
+      }
+
+      ul#home {
+        position: static !important;
+        top: auto !important;
+        left: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        transform: none !important;
+        transition: none !important;
       }
 
       #spNavi {
         display: none !important;
         visibility: hidden !important;
         pointer-events: none !important;
-      }
-
-      ul#home {
-        position: static !important;
-        top: auto !important;
+        overflow: hidden !important;
       }
     `;
 
@@ -96,20 +104,21 @@
 
   function boot() {
     injectStyle();
-    resetMenuSideEffects();
+    resetMenuState();
 
-    setTimeout(resetMenuSideEffects, 50);
-    setTimeout(resetMenuSideEffects, 150);
-    setTimeout(resetMenuSideEffects, 400);
-    setTimeout(resetMenuSideEffects, 900);
+    setTimeout(resetMenuState, 30);
+    setTimeout(resetMenuState, 100);
+    setTimeout(resetMenuState, 250);
+    setTimeout(resetMenuState, 500);
+    setTimeout(resetMenuState, 1000);
 
     if (!timerId) {
-      timerId = window.setInterval(resetMenuSideEffects, 250);
+      timerId = window.setInterval(resetMenuState, 120);
     }
 
     if (!observer) {
       observer = new MutationObserver(() => {
-        resetMenuSideEffects();
+        resetMenuState();
       });
 
       observer.observe(document.documentElement, {
@@ -127,10 +136,11 @@
     boot();
   }
 
-  window.addEventListener('pageshow', resetMenuSideEffects, true);
+  window.addEventListener('pageshow', resetMenuState, true);
+  window.addEventListener('focus', resetMenuState, true);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      resetMenuSideEffects();
+      resetMenuState();
     }
   }, true);
 })();
