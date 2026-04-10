@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Berry menu blocker
 // @namespace    berry-workaround
-// @version      1.0.0
+// @version      1.0.1
 // @match        *://*.cityheaven.net/*
 // @run-at       document-start
 // ==/UserScript==
@@ -83,6 +83,44 @@
 
   document.addEventListener('pointerdown', function (e) {
     rememberTouchPointFromPointerEvent(e);
+  }, true);
+
+  document.addEventListener('pointerdown', function (e) {
+  const target = getMenuTargetFromEventTarget(e.target);
+  if (!target) return;
+
+  const recentRealTouch = wasRecentRealTouch();
+  if (!recentRealTouch) {
+    blockEvent(e);
+  }
+  }, true);
+
+  document.addEventListener('touchstart', function (e) {
+    const target = getMenuTargetFromEventTarget(e.target);
+    if (!target) return;
+  
+    const t = e.touches && e.touches[0];
+    if (!t) {
+      blockEvent(e);
+      return;
+    }
+  
+    const menu = getMenuLink();
+    if (!menu) {
+      blockEvent(e);
+      return;
+    }
+  
+    const r = menu.getBoundingClientRect();
+    const near =
+      t.clientX >= r.left - HIT_SLOP_PX &&
+      t.clientX <= r.right + HIT_SLOP_PX &&
+      t.clientY >= r.top - HIT_SLOP_PX &&
+      t.clientY <= r.bottom + HIT_SLOP_PX;
+  
+    if (!near) {
+      blockEvent(e);
+    }
   }, true);
 
   document.addEventListener('click', function (e) {
