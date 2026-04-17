@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      2.0.0
+// @version      2.0.5
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -219,6 +219,7 @@
 
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
   const RE_YEAR = /(\d{4})年/;
+  const RE_DTO_FULL_JP_YMD_HM = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日(?:\s*[（(][^）)]+[）)])?(?:\s|　)+(\d{1,2}):(\d{2})/;
 
   function extractYearMonth(text) {
     const m = (text || "").match(RE_YEARMON);
@@ -287,77 +288,45 @@
   }
 
   function parseLatestTsUtcMsFromHtmlDto(html) {
-    if (!html) return { ts: null, err: "empty_html" };
+    if (!html) return { ts: null, err: "empty_html", raw_time: "" };
   
-    RE_REGIST_TIME_SPAN.lastIndex = 0;
     RE_STYLE5_SPAN.lastIndex = 0;
   
-    const ym = extractYearMonth(html);
-    let headerY = ym.y;
-    const headerMo = ym.mo;
-  
-    if (headerY == null) headerY = extractYearOnly(html);
-  
-    let maxTs = null;
-    let foundAny = false;
     let foundRaw = "";
+    let mSpan;
   
-    function applyOne(text) {
-      const inner = String(text || "")
+    while ((mSpan = RE_STYLE5_SPAN.exec(html)) !== null) {
+      const inner = String(mSpan[1] || "")
         .replace(/<[^>]+>/g, " ")
         .replace(/\s+/g, " ")
         .trim();
   
-      const m = inner.match(RE_JP_MMDD_HHMM);
-      if (!m) return false;
-
-      if (!foundRaw) foundRaw = m[0];
+      const m = inner.match(RE_DTO_FULL_JP_YMD_HM);
+      if (!m) continue;
   
-      const mm = parseInt(m[1], 10);
-      const dd = parseInt(m[2], 10);
-      const hh = parseInt(m[3], 10);
-      const mi = parseInt(m[4], 10);
+      foundRaw = m[0];
   
-      if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) {
-        return true;
+      const y  = parseInt(m[1], 10);
+      const mo = parseInt(m[2], 10);
+      const d  = parseInt(m[3], 10);
+      const hh = parseInt(m[4], 10);
+      const mi = parseInt(m[5], 10);
+  
+      if (!(y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) {
+        return { ts: null, err: "dto_datetime_out_of_range", raw_time: foundRaw };
       }
   
-      let y = guessYear(headerY, headerMo, mm);
-      if (y == null) y = new Date().getFullYear();
-  
-      const iso = `${y}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}T${String(hh).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00+09:00`;
+      const iso = `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}T${String(hh).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00+09:00`;
       const ts = new Date(iso).getTime();
   
-      if (Number.isFinite(ts) && ts > 0) {
-        maxTs = ts;
-        foundAny = true;
-        return true;
+      if (!Number.isFinite(ts) || ts <= 0) {
+        return { ts: null, err: "dto_datetime_to_epoch_failed", raw_time: foundRaw };
       }
-      return false;
+  
+      return { ts, err: "", raw_time: foundRaw };
     }
   
-    let mSpan;
-  
-    // 1) PC側想定
-    while ((mSpan = RE_REGIST_TIME_SPAN.exec(html)) !== null) {
-      if (applyOne(mSpan[1] || "")) break;
-    }
-  
-    // 2) スマホ側想定
-    if (!foundAny) {
-      while ((mSpan = RE_STYLE5_SPAN.exec(html)) !== null) {
-        if (applyOne(mSpan[1] || "")) break;
-      }
-    }
-  
-    // 3) 最後の保険
-    if (!foundAny) {
-      applyOne(html);
-    }
-  
-    if (!foundAny) return { ts: null, err: "no_regist_time_found", raw_time: foundRaw };
-    if (maxTs == null) return { ts: null, err: "regist_time_parse_failed", raw_time: foundRaw };
-    return { ts: maxTs, err: "", raw_time: foundRaw };
+    return { ts: null, err: "no_style5_datetime_found", raw_time: foundRaw };
   }
 
   function isDtoHost(host) {
@@ -383,7 +352,7 @@
 
     if (isDtoHost(url.hostname)) {
       url.protocol = "https:";
-      url.hostname = "www.dto.jp";
+      url.hostname = "s.dto.jp";
       try { url.searchParams.delete("pcmode"); } catch {}
       try { url.searchParams.delete("spmode"); } catch {}
     } else {
@@ -519,7 +488,8 @@
         diary_url: diaryUrl,
         parser_version: "userscript-dto-v2",
         client_id: "firefox-userscript",
-        raw_time: parsed.raw_time || ""
+        raw_time: parsed.raw_time || "",
+        force: !!forceNoCache,
       };
     } else {
       setCached(diaryUrl, null, parsed.err || "parse_failed");
@@ -531,7 +501,8 @@
         diary_url: diaryUrl,
         parser_version: "userscript-dto-v2",
         client_id: "firefox-userscript",
-        raw_time: parsed.raw_time || ""
+        raw_time: parsed.raw_time || "",
+        force: !!forceNoCache,
       };
     }
   }
