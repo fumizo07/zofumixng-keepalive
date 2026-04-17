@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      2.0.5
+// @version      2.1.0
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -213,12 +213,9 @@
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 
-  const RE_REGIST_TIME_SPAN = /<span[^>]*class\s*=\s*(?:"[^"]*\bregist_time\b[^"]*"|'[^']*\bregist_time\b[^']*')[^>]*>([\s\S]*?)<\/span>/gi;
   const RE_STYLE5_SPAN = /<span[^>]*class\s*=\s*(?:"[^"]*\bstyle5\b[^"]*"|'[^']*\bstyle5\b[^']*')[^>]*>([\s\S]*?)<\/span>/gi;
-  const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*[（(][^）)]+[）)])?(?:\s|　)+(\d{1,2}):(\d{2})/;
 
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
-  const RE_YEAR = /(\d{4})年/;
   const RE_DTO_FULL_JP_YMD_HM = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日(?:\s*[（(][^）)]+[）)])?(?:\s|　)+(\d{1,2}):(\d{2})/;
 
   function extractYearMonth(text) {
@@ -228,14 +225,6 @@
     const mo = parseInt(m[2], 10);
     if (y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12) return { y, mo };
     return { y: null, mo: null };
-  }
-
-  function extractYearOnly(text) {
-    const m = (text || "").match(RE_YEAR);
-    if (!m) return null;
-    const y = parseInt(m[1], 10);
-    if (y >= 1900 && y <= 2100) return y;
-    return null;
   }
 
   function guessYear(headerY, headerMo, entryMo) {
