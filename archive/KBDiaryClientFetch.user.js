@@ -214,7 +214,7 @@
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 
   const RE_REGIST_TIME_SPAN = /<span[^>]*class="[^"]*\bregist_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
-  const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*\([^)]+\))?\s*(\d{1,2}):(\d{2})/;
+  const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*[（(][^）)]+[）)])?(?:\s|　)+(\d{1,2}):(\d{2})/;
 
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
   const RE_YEAR = /(\d{4})年/;
