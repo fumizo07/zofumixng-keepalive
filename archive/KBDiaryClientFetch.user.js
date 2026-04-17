@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      1.0.1
+// @version      1.0.5
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -214,6 +214,7 @@
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 
   const RE_REGIST_TIME_SPAN = /<span[^>]*class="[^"]*\bregist_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
+  const RE_STYLE5_SPAN = /<span[^>]*class\s*=\s*(?:"[^"]*\bstyle5\b[^"]*"|'[^']*\bstyle5\b[^']*')[^>]*>([\s\S]*?)<\/span>/gi;
   const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*[（(][^）)]+[）)])?(?:\s|　)+(\d{1,2}):(\d{2})/;
 
   const RE_YEARMON = /(\d{4})年\s*(\d{1,2})月/;
@@ -287,42 +288,69 @@
 
   function parseLatestTsUtcMsFromHtmlDto(html) {
     if (!html) return { ts: null, err: "empty_html" };
+  
     RE_REGIST_TIME_SPAN.lastIndex = 0;
-
+    RE_STYLE5_SPAN.lastIndex = 0;
+  
     const ym = extractYearMonth(html);
     let headerY = ym.y;
     const headerMo = ym.mo;
-
+  
     if (headerY == null) headerY = extractYearOnly(html);
-
+  
     let maxTs = null;
     let foundAny = false;
-
-    let mSpan;
-    while ((mSpan = RE_REGIST_TIME_SPAN.exec(html)) !== null) {
-      const inner = String(mSpan[1] || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  
+    function applyOne(text) {
+      const inner = String(text || "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+  
       const m = inner.match(RE_JP_MMDD_HHMM);
-      if (!m) continue;
-
-      foundAny = true;
-
+      if (!m) return false;
+  
       const mm = parseInt(m[1], 10);
       const dd = parseInt(m[2], 10);
       const hh = parseInt(m[3], 10);
       const mi = parseInt(m[4], 10);
-
-      if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) continue;
-
+  
+      if (!(mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 && hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59)) {
+        return true;
+      }
+  
       let y = guessYear(headerY, headerMo, mm);
       if (y == null) y = new Date().getFullYear();
-
+  
       const iso = `${y}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}T${String(hh).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00+09:00`;
       const ts = new Date(iso).getTime();
-
-      if (!Number.isFinite(ts) || ts <= 0) continue;
-      if (maxTs == null || ts > maxTs) maxTs = ts;
+  
+      if (Number.isFinite(ts) && ts > 0) {
+        if (maxTs == null || ts > maxTs) maxTs = ts;
+        foundAny = true;
+      }
+      return true;
     }
-
+  
+    let mSpan;
+  
+    // 1) PC側想定
+    while ((mSpan = RE_REGIST_TIME_SPAN.exec(html)) !== null) {
+      applyOne(mSpan[1] || "");
+    }
+  
+    // 2) スマホ側想定
+    if (!foundAny) {
+      while ((mSpan = RE_STYLE5_SPAN.exec(html)) !== null) {
+        applyOne(mSpan[1] || "");
+      }
+    }
+  
+    // 3) 最後の保険
+    if (!foundAny) {
+      applyOne(html);
+    }
+  
     if (!foundAny) return { ts: null, err: "no_regist_time_found" };
     if (maxTs == null) return { ts: null, err: "regist_time_parse_failed" };
     return { ts: maxTs, err: "" };
