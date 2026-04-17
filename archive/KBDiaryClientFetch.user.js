@@ -246,6 +246,7 @@
 
   function parseLatestTsUtcMsFromHtmlHeaven(html) {
     if (!html) return { ts: null, err: "empty_html" };
+    RE_DIARY_TIME_SPAN.lastIndex = 0;
 
     const ym = extractYearMonth(html);
     const headerY = ym.y;
@@ -286,6 +287,7 @@
 
   function parseLatestTsUtcMsFromHtmlDto(html) {
     if (!html) return { ts: null, err: "empty_html" };
+    RE_REGIST_TIME_SPAN.lastIndex = 0;
 
     const ym = extractYearMonth(html);
     let headerY = ym.y;
