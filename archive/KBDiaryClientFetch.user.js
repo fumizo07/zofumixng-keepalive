@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      1.0.6
+// @version      2.0.0
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -329,23 +329,24 @@
       const ts = new Date(iso).getTime();
   
       if (Number.isFinite(ts) && ts > 0) {
-        if (maxTs == null || ts > maxTs) maxTs = ts;
+        maxTs = ts;
         foundAny = true;
+        return true;
       }
-      return true;
+      return false;
     }
   
     let mSpan;
   
     // 1) PC側想定
     while ((mSpan = RE_REGIST_TIME_SPAN.exec(html)) !== null) {
-      applyOne(mSpan[1] || "");
+      if (applyOne(mSpan[1] || "")) break;
     }
   
     // 2) スマホ側想定
     if (!foundAny) {
       while ((mSpan = RE_STYLE5_SPAN.exec(html)) !== null) {
-        applyOne(mSpan[1] || "");
+        if (applyOne(mSpan[1] || "")) break;
       }
     }
   
