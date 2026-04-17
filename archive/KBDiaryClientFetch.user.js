@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         KB Diary Client Fetch (push to server)
 // @namespace    kb-diary
-// @version      1.0.5
+// @version      1.0.6
 // @description  Fetch diary latest timestamp in real browser and push to KB server (DOM CustomEvent bridge, epoch force, stage signals; pushed=kb:diary:pushed only)
 // @match        https://*/kb*
 // @grant        GM_xmlhttpRequest
@@ -213,7 +213,7 @@
   const RE_MMDD_HHMM = /(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/;
   const RE_DIARY_TIME_SPAN = /<span[^>]*class="[^"]*\bdiary_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
 
-  const RE_REGIST_TIME_SPAN = /<span[^>]*class="[^"]*\bregist_time\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
+  const RE_REGIST_TIME_SPAN = /<span[^>]*class\s*=\s*(?:"[^"]*\bregist_time\b[^"]*"|'[^']*\bregist_time\b[^']*')[^>]*>([\s\S]*?)<\/span>/gi;
   const RE_STYLE5_SPAN = /<span[^>]*class\s*=\s*(?:"[^"]*\bstyle5\b[^"]*"|'[^']*\bstyle5\b[^']*')[^>]*>([\s\S]*?)<\/span>/gi;
   const RE_JP_MMDD_HHMM = /(\d{1,2})月\s*(\d{1,2})日(?:\s*[（(][^）)]+[）)])?(?:\s|　)+(\d{1,2}):(\d{2})/;
 
@@ -300,6 +300,7 @@
   
     let maxTs = null;
     let foundAny = false;
+    let foundRaw = "";
   
     function applyOne(text) {
       const inner = String(text || "")
@@ -309,6 +310,8 @@
   
       const m = inner.match(RE_JP_MMDD_HHMM);
       if (!m) return false;
+
+      if (!foundRaw) foundRaw = m[0];
   
       const mm = parseInt(m[1], 10);
       const dd = parseInt(m[2], 10);
@@ -351,9 +354,9 @@
       applyOne(html);
     }
   
-    if (!foundAny) return { ts: null, err: "no_regist_time_found" };
-    if (maxTs == null) return { ts: null, err: "regist_time_parse_failed" };
-    return { ts: maxTs, err: "" };
+    if (!foundAny) return { ts: null, err: "no_regist_time_found", raw_time: foundRaw };
+    if (maxTs == null) return { ts: null, err: "regist_time_parse_failed", raw_time: foundRaw };
+    return { ts: maxTs, err: "", raw_time: foundRaw };
   }
 
   function isDtoHost(host) {
@@ -507,10 +510,28 @@
     const parsed = parseLatestByUrlKind(diaryUrl, r.text);
     if (parsed.ts != null && !parsed.err) {
       setCached(diaryUrl, parsed.ts, "");
-      return { id, latest_ts: parsed.ts, error: "", checked_at_ms: nowMs() };
+      return {
+        id,
+        latest_ts: parsed.ts,
+        error: "",
+        checked_at_ms: nowMs(),
+        diary_url: diaryUrl,
+        parser_version: "userscript-dto-v2",
+        client_id: "firefox-userscript",
+        raw_time: parsed.raw_time || ""
+      };
     } else {
       setCached(diaryUrl, null, parsed.err || "parse_failed");
-      return { id, latest_ts: null, error: parsed.err || "parse_failed", checked_at_ms: nowMs() };
+      return {
+        id,
+        latest_ts: null,
+        error: parsed.err || "parse_failed",
+        checked_at_ms: nowMs(),
+        diary_url: diaryUrl,
+        parser_version: "userscript-dto-v2",
+        client_id: "firefox-userscript",
+        raw_time: parsed.raw_time || ""
+      };
     }
   }
 
