@@ -1,0 +1,31 @@
+name: Delete old workflow runs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old workflow runs except this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "Current run id: $CURRENT_RUN_ID"
+          echo "Repository: $REPO"
+
+          gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
+            --jq '.workflow_runs[].id' | while read run_id; do
+              if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
+                echo "Skip current run: $run_id"
+              else
+                echo "Delete run: $run_id"
+                gh api -X DELETE "repos/$REPO/actions/runs/$run_id" || true
+              fi
+            done
